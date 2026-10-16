@@ -7,3 +7,5 @@
 版本4.0.8/40008/runtime408仅图标、打包与版本更新，protocol4/controlRevision1及音频/供网逻辑保持4.0.7。更新runtime是为了让已安装旧配套的手机在下一次启动功能前更新新图标。不得擅自重置Dock/Finder全局缓存或删除应用数据。
 
 4.0.8-review.2：Mac显示修正，撤销运行时原始ICNS覆盖，保留系统外形和留白；侧栏32→24点。原图、两端图标资源、Android APK及协议/业务逻辑不变，版本仍4.0.8，按review.2与sourceCommit区分包。
+
+4.0.8-review.3覆盖review.2的Mac显示策略：用户截图证实Dock为占位图。Mac图像经透明底处理与几何圆角遮罩，1024画布内820像素底板/102像素透明留白；DockIcon.png明确加载并设128点逻辑尺寸，再刷新DockTile。标准ICNS同时保留。Android不变；版本仍4.0.8，以review.3/源码commit区分。原始生成透明边缘有碎屑，已用固定圆角边界去掉，不直接交付该草稿。

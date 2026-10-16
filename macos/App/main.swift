@@ -17,6 +17,13 @@ import UI
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
  weak var controller:SessionController?
  private var terminating=false
+ func applicationDidFinishLaunching(_ notification:Notification) {
+  guard let url=Bundle.main.url(forResource:"DockIcon",withExtension:"png"),let icon=NSImage(contentsOf:url),icon.isValid else{NSLog("USBLinkMic Dock icon load FAILED");return}
+  icon.size=NSSize(width:128,height:128)
+  NSApp.applicationIconImage=icon
+  NSApp.dockTile.display()
+  NSLog("USBLinkMic Dock icon loaded:128pt,transparent PNG")
+ }
  func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
   guard !terminating else{return .terminateLater};terminating=true
   Task {
