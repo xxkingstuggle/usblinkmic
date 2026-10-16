@@ -133,7 +133,11 @@ private struct OwnedSession: Codable {
    let message=error.localizedDescription
    let code:String
    if case LinkError.failure(let value,_) = error {code=value}else{code="TASK_FAILED"}
+   log(module.rawValue,"operationFailed",message)
    await stop(module)
+   // Retained ownership means cleanup failed. Do not replace that actionable
+   // recovery status with the earlier operation error or pretend the task stopped.
+   if owned[module]?.id==id {return}
    if module == .microphone {snapshot.audioState = .failed}
    else if ["ROM_UNSUPPORTED","NCM_NOT_TRACKED"].contains(code) {snapshot.networkState = .unsupported}
    else if code=="NO_UPSTREAM" {snapshot.networkState = .noInternet}
@@ -237,10 +241,13 @@ private struct OwnedSession: Codable {
   log("audio","failure","session=\(id), frames=\(snapshot.receivedFrames), reason=\(message)")
   if let port=session.controlForward,let response=try? await ControlClient.request(port:port,body:["command":"status","session":id,"token":session.token]),response["cancelled"] as? Bool == true {
    guard owned[.microphone]?.id==id else{return}
-   await stop(.microphone);status(.microphone,.stopped,"手机已停止录音");return
+   await stop(.microphone)
+   if owned[.microphone]==nil {status(.microphone,.stopped,"手机已停止录音")}
+   return
   }
   guard owned[.microphone]?.id==id else{return}
-  await stop(.microphone);snapshot.audioState = .failed;status(.microphone,.failed,"音频失败",message,"AUDIO_FAILED")
+  await stop(.microphone);snapshot.audioState = .failed
+  if owned[.microphone]==nil {status(.microphone,.failed,"音频失败",message,"AUDIO_FAILED")}
  }
  private func startReverse(_ id:String,_ serial:String,_ settings:Settings) async throws {
   snapshot.networkState = .preparing
@@ -458,10 +465,17 @@ private struct OwnedSession: Codable {
   stopping.insert(module);defer{stopping.remove(module)}
   status(module,.stopping,"正在停止")
   if module == .microphone {receiver.stop();output.stop();snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected;audioWatchdog.stop(session.id);snapshot.receivedFrames=0;snapshot.effectiveAudio=nil}
-  if module == .phoneInternet {ncmMonitor?.cancel();ncmMonitor=nil;ncmInterface=nil;snapshot.networkState = .stopped}
+  if module == .phoneInternet {
+   ncmMonitor?.cancel();ncmMonitor=nil;ncmInterface=nil;snapshot.networkState = .stopped
+   if session.oldUSB != nil,owned[.microphone] != nil,snapshot.settings.transport == .usb {await stop(.microphone)}
+  }
   if module == .macInternet {relay?.terminationHandler=nil;if relay?.isRunning==true {relay?.terminate()};relay=nil;snapshot.networkState = .stopped}
   do{try await cleanup(session);try saveJournal();status(module,.stopped,"已停止")}
-  catch{owned[module]=session;try? saveJournal();status(module,.failed,"资源恢复待重试",error.localizedDescription,"CLEANUP_INCOMPLETE")}
+  catch{
+   owned[module]=session;try? saveJournal()
+   if module == .microphone {snapshot.audioState = .failed}else{snapshot.networkState = .failed}
+   status(module,.failed,"资源恢复待重试，请点击全部停止",error.localizedDescription,"CLEANUP_INCOMPLETE")
+  }
  }
  public func stopAll() async {for module in [Workspace.microphone,.phoneInternet,.macInternet] {await stop(module)}}
  public func shutdown() async {timer?.cancel();deviceMonitor?.cancel();await stopAll()}

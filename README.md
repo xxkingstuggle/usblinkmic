@@ -1,6 +1,6 @@
 # USB LinkMic 4
 
-Clean-room native macOS26/Apple Silicon + Android8+ companion. Protocol4 is independent of prior versions. Private review build; installation/device acceptance is pending.
+Native macOS26/Apple Silicon + Android8+ companion. Protocol4 remains independent of prior versions. For4.0.3 the user explicitly authorized reading the archived implementation to repair audio/NCM; this repair is not claimed clean-room. NCM shell automation requiresAndroid11+/supported ROM. The user owns functional testing/validation for this build; no acceptance pass is inferred from compilation.
 
 Three uses: phone microphone to Mac (USB/trusted LAN), phone USB CDC-NCM network to Mac on supported ROMs, Mac IPv4 TCP/UDP internet to Android through an explicitly authorized VPN. Includes real PCM metering/output, virtual-input guidance, explicit permission states, settings drafts, and owned-resource cleanup.
 
@@ -11,7 +11,7 @@ Use Xcode27/Swift6.4, JDK17, Android SDK36/BuildTools35.0.0. Set `JAVA_HOME` to 
 ```sh
 ./scripts/validate.sh
 ./scripts/fetch-tools.sh
-./scripts/package.sh 4.0.0-local.1
+./scripts/package.sh 4.0.3-local.1
 ```
 
 Gradle wrapper8.13 is pinned by SHA256. Build/test caches are project-local. `scripts/package.sh` refuses to overwrite a release directory and uses a local persistent Android signing key excluded from Git. Ordinary runtime users do not need a development environment; APK/ADB/relay/Java are bundled.
