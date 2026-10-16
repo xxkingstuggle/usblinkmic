@@ -34,6 +34,7 @@ private struct OwnedSession: Codable {
  private var booted=false
  private var recovering=true
  private var recoveryBlocked=false
+ private var quitting=false
  private var onboardingURL:URL {journal.deletingLastPathComponent().appendingPathComponent("onboarding.json")}
  public init(resourceRoot:URL?=nil, stateDirectory:URL?=nil) {
   root=resourceRoot ?? Bundle.main.resourceURL ?? URL(fileURLWithPath:"/nonexistent")
@@ -128,7 +129,7 @@ private struct OwnedSession: Codable {
   }catch{log("devices","failed",error.localizedDescription)}
  }
  private func start(_ module:Workspace) {
-  guard [.microphone,.phoneInternet,.macInternet].contains(module),jobs[module]==nil,owned[module]==nil,!stopping.contains(module),!snapshot.isSavingSettings,!recovering,!recoveryBlocked else{return}
+  guard [.microphone,.phoneInternet,.macInternet].contains(module),jobs[module]==nil,owned[module]==nil,!stopping.contains(module),!snapshot.isSavingSettings,!recovering,!recoveryBlocked,!quitting else{return}
   let jobID=UUID().uuidString;jobIDs[module]=jobID
   jobs[module]=Task{await execute(module);if jobIDs[module]==jobID {jobs[module]=nil;jobIDs[module]=nil}}
  }
@@ -571,7 +572,11 @@ private struct OwnedSession: Codable {
   }
  }
  public func stopAll() async {for module in [Workspace.microphone,.phoneInternet,.macInternet] {await stop(module)}}
- public func shutdown() async {timer?.cancel();deviceMonitor?.cancel();await stopAll()}
+ public func shutdown() async -> Bool {
+  quitting=true;await stopAll()
+  guard owned.isEmpty,!recoveryBlocked else{quitting=false;return false}
+  timer?.cancel();deviceMonitor?.cancel();return true
+ }
  private func exportLogs() {
   let panel=NSSavePanel();panel.nameFieldStringValue="USBLinkMic-diagnostics.txt"
   if panel.runModal() == .OK,let url=panel.url {do{let text=try diagnosticLog.exportText();try LogRedactor.redact(text).write(to:url,atomically:true,encoding:.utf8)}catch{log("logs","exportFailed",error.localizedDescription)}}

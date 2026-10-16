@@ -45,3 +45,4 @@ Crash recovery records relay PID plus executable path and unique JVM session pro
 - USB状态来源为svc usb getFunctions→sys.usb.state；sys.usb.config仅诊断。NCM启动另有usb0实际跟踪与tethered确认，停止确认退出共享；取消/恢复不把ADB退出码当作USB结果。
 - 私有OwnedSession journal增加可选ncmServices[{name,device,wasEnabled}]及ncmUSBChanged；修改精确USB服务前持久化，失败保留归属重试，恢复期间阻止启动新任务。不能修改其他服务或全局路由。
 - 日志启动读入历史，导出磁盘有界历史，显式清除同时清盘。NCM阶段事件覆盖USB、共享、Mac服务/DHCP、HTTPS及恢复，统一LogRedactor脱敏。详见docs/ncm-repair-4.0.4.md。
+- shutdown异步返回资源是否恢复；App退出等待该结果，取消5秒提前退出。失败保留UI/归属日志供重试，退出期间禁止新任务。

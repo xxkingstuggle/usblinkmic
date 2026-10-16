@@ -15,9 +15,14 @@ import UI
 }
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
  weak var controller:SessionController?
+ private var terminating=false
  func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
-  Task {await controller?.shutdown();NSApp.reply(toApplicationShouldTerminate:true)}
-  DispatchQueue.main.asyncAfter(deadline:.now()+5){NSApp.reply(toApplicationShouldTerminate:true)}
+  guard !terminating else{return .terminateLater};terminating=true
+  Task {
+   let restored=await controller?.shutdown() ?? true
+   terminating=false
+   NSApp.reply(toApplicationShouldTerminate:restored)
+  }
   return .terminateLater
  }
 }
