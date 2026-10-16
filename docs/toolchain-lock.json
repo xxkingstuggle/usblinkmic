@@ -1,0 +1,22 @@
+{
+  "gradle": {
+    "version": "8.13",
+    "sha256": "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78"
+  },
+  "platformTools": {
+    "version": "36.0.0",
+    "source": "https://dl.google.com/android/repository/platform-tools_r36.0.0-darwin.zip",
+    "sha256": "d3e9fa1df3345cf728586908426615a60863d2632f73f1ce14f0f1349ef000fd"
+  },
+  "gnirehtet": {
+    "version": "2.5.1",
+    "source": "https://codeload.github.com/Genymobile/gnirehtet/tar.gz/refs/tags/v2.5.1",
+    "sha256": "0d41361b9ac8b3b7fa4f4a0aff933472a72886556bd3fc4659be299b546274e6"
+  },
+  "jdk": {
+    "version": "17.0.20.1+0",
+    "vendor": "Homebrew",
+    "license": "GPLv2 with Classpath Exception; runtime legal/ retained",
+    "source": "https://github.com/openjdk/jdk17u"
+  }
+}

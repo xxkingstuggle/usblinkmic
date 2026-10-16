@@ -1,0 +1,351 @@
+import Foundation
+import Combine
+import AppKit
+import CryptoKit
+import Darwin
+import Contracts
+import Support
+
+private struct OwnedSession: Codable {
+ var id:String; var serial:String; var token:String; var controlForward:Int?; var controlTarget:Int?; var reverse:String?; var relayPID:Int32?; var relayExecutable:String?; var oldUSB:String?; var originalInterface:String?; var module:String
+}
+@MainActor public final class SessionController: ObservableObject, AppControlling {
+ @Published public private(set) var snapshot=AppSnapshot()
+ private let store:SettingsStore
+ private let root:URL
+ private let adb:ADB
+ private let journal:URL
+ private var owned:[Workspace:OwnedSession]=[:]
+ private var jobs:[Workspace:Task<Void,Never>]=[:]
+ private var jobIDs:[Workspace:String]=[:]
+ private var stopping=Set<Workspace>()
+ private var ncmInterface:String?
+ private let receiver=AudioReceiver()
+ private let output=AudioOutput()
+ private var relay:Process?
+ private var lastFrame=Date.distantPast
+ private var timer:Task<Void,Never>?
+ private var deviceMonitor:Task<Void,Never>?
+ private var ncmMonitor:Task<Void,Never>?
+ private var requestedRecordingAt:Date?
+ private var booted=false
+ private var onboardingURL:URL {journal.deletingLastPathComponent().appendingPathComponent("onboarding.json")}
+ public init(resourceRoot:URL?=nil, stateDirectory:URL?=nil) {
+  root=resourceRoot ?? Bundle.main.resourceURL ?? URL(fileURLWithPath:"/nonexistent")
+  adb=ADB(executable:root.appendingPathComponent("platform-tools/adb"))
+  let directory=stateDirectory ?? FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("USBLinkMic-v4")
+  store=SettingsStore(url:directory.appendingPathComponent("settings.json"));journal=directory.appendingPathComponent("owned-sessions.json")
+  do {snapshot.settings=try store.load()} catch {snapshot.recoveryMessage="配置加载失败：\(error.localizedDescription)"}
+  snapshot.outputs=AudioOutput.devices()
+  if let data=try? Data(contentsOf:onboardingURL),let flags=try? JSONDecoder().decode([String:Bool].self,from:data){snapshot.wizardSkipped=flags["skipped"] ?? false;snapshot.soundTestCompleted=flags["soundTest"] ?? false}
+ }
+ public func boot() {
+  guard !booted else{return};booted=true
+  Task {await recover();await refresh()}
+  timer=Task {while !Task.isCancelled {try? await Task.sleep(nanoseconds:1_000_000_000);await tick()}}
+  deviceMonitor=Task {while !Task.isCancelled {try? await Task.sleep(nanoseconds:3_000_000_000);if !Task.isCancelled {await refresh()}}}
+ }
+ public func send(_ action:UserAction) {
+  switch action {
+  case .refresh:Task{await refresh()}
+  case .selectDevice(let serial):snapshot.selectedDeviceID=serial
+  case .start(let module):start(module)
+  case .stop(let module):Task{await stop(module)}
+  case .stopAll:Task{await stopAll()}
+  case .saveSettings(let settings):
+   let errors=SettingsValidator.errors(settings)
+   guard errors.isEmpty else {log("settings","invalid",errors.joined(separator:"；"));return}
+   Task {await stopAll();do {try store.save(settings);snapshot.settings=settings;log("settings","saved","配置已保存；连接参数变更后需重新启动")}catch{log("settings","failed",error.localizedDescription)}}
+  case .setGain(let gain):guard gain.isFinite,(0...4).contains(gain) else{return};snapshot.settings.gain=gain;output.gain=Float(gain)
+  case .setMuted(let muted):snapshot.settings.muted=muted;output.muted=muted
+  case .skipWizard:snapshot.wizardSkipped=true;saveOnboarding()
+  case .completeSoundTest:if snapshot.receivedFrames>0,snapshot.microphone.phase == .running {snapshot.soundTestCompleted=true;saveOnboarding()}
+  case .clearLogs:snapshot.logs=[]
+  case .exportLogs:exportLogs()
+  case .openDriverHelp:NSWorkspace.shared.open(URL(string:"https://existential.audio/blackhole/")!)
+  case .openPhoneSettings:if let serial=snapshot.selectedDeviceID {Task{do{_ = try await adb.run(serial,["shell","am","start","-a","android.settings.APPLICATION_DETAILS_SETTINGS","-d","package:com.zjx.usblinkmic"])}catch{log("permission","failed",error.localizedDescription)}}}
+  }
+ }
+ private func saveOnboarding(){do{try FileManager.default.createDirectory(at:onboardingURL.deletingLastPathComponent(),withIntermediateDirectories:true);try JSONEncoder().encode(["skipped":snapshot.wizardSkipped,"soundTest":snapshot.soundTestCompleted]).write(to:onboardingURL,options:.atomic)}catch{log("wizard","saveFailed",error.localizedDescription)}}
+ private func log(_ module:String,_ stage:String,_ text:String){var safe=text;for serial in Set(snapshot.devices.map{$0.id}+owned.values.map{$0.serial}+[snapshot.selectedDeviceID ?? ""]) where !serial.isEmpty {safe=safe.replacingOccurrences(of:serial,with:"serial=[REDACTED]")};snapshot.logs.append(LogEntry(module:module,stage:stage,message:LogRedactor.redact(safe)));if snapshot.logs.count>500 {snapshot.logs.removeFirst(snapshot.logs.count-500)}}
+ private func status(_ module:Workspace,_ phase:TaskPhase,_ stage:String,_ detail:String="",_ code:String?=nil) {
+  var s=ModuleStatus();s.phase=phase;s.stage=stage;s.detail=detail;s.errorCode=code;s.taskID=owned[module]?.id
+  switch module{case .microphone:snapshot.microphone=s;case .phoneInternet:snapshot.phoneInternet=s;case .macInternet:snapshot.macInternet=s;default:break}
+  log(module.rawValue,stage,detail)
+ }
+ private func valid(_ module:Workspace,_ id:String)->Bool{owned[module]?.id==id && !Task.isCancelled}
+ private func saveJournal() throws {try FileManager.default.createDirectory(at:journal.deletingLastPathComponent(),withIntermediateDirectories:true);try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:journal.deletingLastPathComponent().path);try JSONEncoder().encode(Array(owned.values)).write(to:journal,options:.atomic);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:journal.path)}
+ private func recover() async {
+  guard FileManager.default.fileExists(atPath:journal.path) else{return}
+  do {let sessions=try JSONDecoder().decode([OwnedSession].self,from:Data(contentsOf:journal));for s in sessions {try await cleanup(s)};try Data("[]".utf8).write(to:journal,options:.atomic);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:journal.path);snapshot.recoveryMessage="上次会话资源已清理；未恢复录音"}catch{snapshot.recoveryMessage="上次资源清理未完成：\(error.localizedDescription)"}
+ }
+ private func refresh() async {
+  snapshot.outputs=AudioOutput.devices()
+  do {
+   let text=try await adb.run(nil,["devices","-l"])
+   snapshot.devices=ADB.devices(text).map{Device(id:$0.0,name:$0.0,state:$0.1=="device" ? .online:($0.1=="unauthorized" ? .unauthorized:.offline))}
+   if snapshot.selectedDeviceID==nil,snapshot.devices.count==1 {snapshot.selectedDeviceID=snapshot.devices.first?.id}
+  }catch{log("devices","failed",error.localizedDescription)}
+ }
+ private func start(_ module:Workspace) {
+  guard [.microphone,.phoneInternet,.macInternet].contains(module),jobs[module]==nil,owned[module]==nil,!stopping.contains(module) else{return}
+  let jobID=UUID().uuidString;jobIDs[module]=jobID
+  jobs[module]=Task{await execute(module);if jobIDs[module]==jobID {jobs[module]=nil;jobIDs[module]=nil}}
+ }
+ private func execute(_ module:Workspace) async {
+  let id=UUID().uuidString
+  var settings=snapshot.settings
+  let token=UUID().uuidString.replacingOccurrences(of:"-",with:"").lowercased()
+  if module == .microphone,settings.transport == .wifi {if settings.pairingCode.isEmpty {settings.pairingCode=token;snapshot.settings.pairingCode=token}}
+  else {settings.pairingCode=token}
+  let serial=snapshot.selectedDeviceID ?? ""
+  owned[module]=OwnedSession(id:id,serial:serial,token:settings.pairingCode,module:module.rawValue)
+  do {
+   try saveJournal();status(module,.checking,"检查前置条件")
+   let errors=SettingsValidator.errors(settings);guard errors.isEmpty else{throw LinkError.failure("INVALID_SETTINGS",errors.joined(separator:"；"))}
+   if module != .microphone || settings.transport == .usb {
+    guard !serial.isEmpty else{throw LinkError.failure("DEVICE_REQUIRED","连接USB手机并选择目标")}
+    let devices=ADB.devices(try await adb.run(nil,["devices"]))
+    guard let device=devices.first(where:{$0.0==serial}) else{throw LinkError.failure("DEVICE_DISCONNECTED","所选手机未连接")}
+    guard device.1=="device" else{throw LinkError.failure(device.1=="unauthorized" ? "USB_UNAUTHORIZED":"DEVICE_OFFLINE","请在所选手机确认USB调试授权并重试")}
+    try await prepareCompanion(module,id,serial)
+   }
+   guard valid(module,id) else{return}
+   if module == .microphone {try await startAudio(id,serial,settings)}
+   else if module == .phoneInternet {await stop(.macInternet);guard owned[.macInternet]==nil else{throw LinkError.failure("DIRECTION_CLEANUP_PENDING","反向供网资源未恢复；先重试停止")};try await startNCM(id,serial,settings)}
+   else {await stop(.phoneInternet);guard owned[.phoneInternet]==nil else{throw LinkError.failure("DIRECTION_CLEANUP_PENDING","手机供网资源未恢复；先重试停止")};try await startReverse(id,serial,settings)}
+  }catch {guard owned[module]?.id==id else{return};let message=error.localizedDescription;let failedNetwork=snapshot.networkState;await stop(module);if module != .microphone{snapshot.networkState=failedNetwork};status(module,.failed,"操作失败",message,"TASK_FAILED")}
+ }
+ private func prepareCompanion(_ module:Workspace,_ id:String,_ serial:String) async throws {
+  let exists=try await adb.run(serial,["shell","pm","list","packages","com.zjx.usblinkmic"])
+  guard valid(module,id) else{throw CancellationError()}
+  let installed=exists.split(separator:"\n").contains("package:com.zjx.usblinkmic")
+  var compatible=false
+  if installed {
+   let capability=try await adb.run(serial,["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"])
+   compatible=capability.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil
+  }
+  if !compatible {
+   let apk=root.appendingPathComponent("companion.apk");let checksum=root.appendingPathComponent("companion.sha256")
+   guard FileManager.default.fileExists(atPath:apk.path),FileManager.default.fileExists(atPath:checksum.path) else{throw LinkError.failure("APK_MISSING","安装包内缺少配套APK或指纹；重新获取完整发行包")}
+   let expected=try String(contentsOf:checksum,encoding:.utf8).trimmingCharacters(in:.whitespacesAndNewlines)
+   let actual=SHA256.hash(data:try Data(contentsOf:apk)).map{String(format:"%02x",$0)}.joined()
+   guard actual==expected else{throw LinkError.failure("APK_HASH_MISMATCH","配套APK校验失败，未安装")}
+   status(module,.preparing,"安装配套App","如手机要求确认安装，请在手机操作；不会自动卸载已有App")
+   _ = try await adb.run(serial,["install","-r",apk.path],timeout:180,cancellable:true)
+   guard valid(module,id) else{throw CancellationError()}
+   let installed=try await adb.run(serial,["shell","pm","list","packages","com.zjx.usblinkmic"])
+   guard installed.contains("package:com.zjx.usblinkmic") else{throw LinkError.failure("INSTALL_NOT_CONFIRMED","未能复查配套App安装")}
+  }
+  let capability=try await adb.run(serial,["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"])
+  guard capability.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil else{throw LinkError.failure("APP_INCOMPATIBLE","配套App未报告兼容协议4；未强行降级或卸载数据")}
+
+ }
+ private func launchPhone(_ module:Workspace,_ id:String,_ serial:String,_ settings:Settings,_ mode:String) async throws {
+  let forward=try await adb.run(serial,["forward","tcp:0","tcp:\(settings.controlPort)"])
+  guard let port=Int(forward) else{throw LinkError.failure("CONTROL_FORWARD","无法建立本会话控制通道")}
+  guard valid(module,id) else{_ = try await adb.run(serial,["forward","--remove","tcp:\(port)"],timeout:3);throw CancellationError()}
+  owned[module]?.controlForward=port;owned[module]?.controlTarget=settings.controlPort;try saveJournal()
+  let audio=settings.audio
+  let args=["shell","am","start","-n","com.zjx.usblinkmic/.MainActivity","--es","mode",mode,"--es","session",id,"--es","token",settings.pairingCode,"--ei","rate",String(audio.sampleRate),"--ei","channels",String(audio.channels),"--es","format",audio.format.rawValue,"--es","source",audio.source.rawValue,"--ei","port",String(settings.audioPort),"--ei","controlPort",String(settings.controlPort),"--es","dns",settings.dns,"--es","routes",settings.routes]
+  _ = try await adb.run(serial,args)
+  status(module,.waitingUser,"等待手机确认","在手机确认本次会话与系统权限；停止可取消")
+ }
+ private func poll(_ module:Workspace,_ id:String) async throws -> [String:Any] {
+  guard let session=owned[module],session.id==id,let port=session.controlForward else{throw CancellationError()}
+  let response=try await ControlClient.request(port:port,body:["command":"status","session":id,"token":session.token])
+  guard valid(module,id) else{throw CancellationError()}
+  guard response["protocol"] as? Int == 4,response["session"] as? String == id else{throw LinkError.failure("PROTOCOL_MISMATCH","手机会话身份或协议不一致")}
+  if let p=response["microphonePermission"] as? String{snapshot.microphonePermission=PermissionState(rawValue:p) ?? .notRequested}
+  if let p=response["notificationPermission"] as? String{snapshot.notificationPermission=PermissionState(rawValue:p) ?? .notRequested}
+  if let p=response["vpnPermission"] as? String{snapshot.vpnPermission=PermissionState(rawValue:p) ?? .notRequested}
+  if let error=response["error"] as? String,!error.isEmpty{throw LinkError.failure("PHONE_ERROR",error)}
+  return response
+ }
+ private func startAudio(_ id:String,_ serial:String,_ settings:Settings) async throws {
+  if settings.purpose == .virtualMicrophone {guard snapshot.outputs.contains(where:{$0.id==settings.outputUID && $0.isVirtual}) else{throw LinkError.failure("DRIVER_REQUIRED","选择BlackHole输出，并在外部软件选择对应输入；缺失时打开官方安装指引")}}
+  try output.start(settings);snapshot.effectiveAudio=settings.audio;snapshot.receivedFrames=0;lastFrame = .distantPast;requestedRecordingAt=nil
+  try receiver.start(settings:settings,session:settings.transport == .usb ? id:"wifi",onFrame:{[weak self] data in Task{@MainActor in
+   guard let self=self,self.valid(.microphone,id) else{return}
+   do{let (level,trend)=try self.output.consume(data,parameters:settings.audio);self.snapshot.level=level;self.snapshot.waveform=trend;self.snapshot.receivedFrames+=1;self.snapshot.audioState = .streaming;self.lastFrame=Date();if self.snapshot.microphone.phase != .running {self.status(.microphone,.running,"有效音频传输","实际PCM帧已到达；静音帧也计为传输")}}
+   catch{await self.failAudio(id,error.localizedDescription)}
+  }},onError:{[weak self] message in Task{@MainActor in await self?.failAudio(id,message)}})
+  snapshot.audioState = .handshake
+  if settings.transport == .wifi {status(.microphone,.connecting,"等待Wi-Fi发送端","手机填写本机地址、端口和配对码；session固定为wifi");return}
+  let reverse="tcp:\(settings.audioPort)"
+  _ = try await adb.run(serial,["reverse","--no-rebind",reverse,reverse]);guard valid(.microphone,id) else{_ = try await adb.run(serial,["reverse","--remove",reverse],timeout:3);throw CancellationError()};owned[.microphone]?.reverse=reverse;try saveJournal()
+  try await launchPhone(.microphone,id,serial,settings,"audio")
+  var failures=0
+  while valid(.microphone,id) {
+   do{
+    let state=try await poll(.microphone,id);failures=0
+    if state["recording"] as? Bool == true {if requestedRecordingAt==nil {requestedRecordingAt=Date();if snapshot.receivedFrames==0 {snapshot.audioState = .waitingFrame;status(.microphone,.connecting,"等待首包")}};return}
+    if state["cancelled"] as? Bool == true {throw LinkError.failure("USER_CANCELLED","手机已取消本次操作")}
+   }catch{failures+=1;if failures>=3 {throw error}}
+   try await Task.sleep(nanoseconds:1_000_000_000)
+  }
+ }
+ private func failAudio(_ id:String,_ message:String) async {
+  guard let session=owned[.microphone],session.id==id else{return}
+  if let port=session.controlForward,let response=try? await ControlClient.request(port:port,body:["command":"status","session":id,"token":session.token]),response["cancelled"] as? Bool == true {
+   await stop(.microphone);status(.microphone,.stopped,"手机已停止录音");return
+  }
+  await stop(.microphone);snapshot.audioState = .failed;status(.microphone,.failed,"音频失败",message,"AUDIO_FAILED")
+ }
+ private func startReverse(_ id:String,_ serial:String,_ settings:Settings) async throws {
+  snapshot.networkState = .preparing
+  try await NetworkProbe.verify()
+  guard valid(.macInternet,id) else{throw CancellationError()}
+  let java=root.appendingPathComponent("runtime/bin/java");let jar=root.appendingPathComponent("relay.jar")
+  guard FileManager.default.isExecutableFile(atPath:java.path),FileManager.default.fileExists(atPath:jar.path) else{throw LinkError.failure("RELAY_MISSING","发行包缺少内置转发运行时")}
+  let p=Process();p.executableURL=java;p.arguments=["-DUSBLinkMic.session=\(id)","-jar",jar.path,"relay","-p","48128"];p.standardOutput=FileHandle.nullDevice;p.standardError=FileHandle.nullDevice
+  try p.run();relay=p;owned[.macInternet]?.relayPID=p.processIdentifier;owned[.macInternet]?.relayExecutable=java.path;try saveJournal()
+  p.terminationHandler={ [weak self] _ in Task{@MainActor in guard let self=self,self.valid(.macInternet,id) else{return};await self.stop(.macInternet);self.status(.macInternet,.failed,"转发进程已退出","检查日志并重新启动","RELAY_EXITED")} }
+  let reverse="localabstract:usblinkmic-v4"
+  _ = try await adb.run(serial,["reverse","--no-rebind",reverse,"tcp:48128"]);guard valid(.macInternet,id) else{_ = try await adb.run(serial,["reverse","--remove",reverse],timeout:3);throw CancellationError()};owned[.macInternet]?.reverse=reverse;try saveJournal()
+  try await launchPhone(.macInternet,id,serial,settings,"vpn")
+  var failures=0
+  while valid(.macInternet,id) {
+   do {let s=try await poll(.macInternet,id);failures=0
+    if s["cancelled"] as? Bool == true {throw LinkError.failure("VPN_DENIED","手机取消了VPN授权")}
+    if s["network"] as? String == "available" {snapshot.networkState = .available;status(.macInternet,.running,"手机请求已验证","手机DNS和HTTPS探测经VPN成功；IPv4 TCP/UDP，未承诺IPv6/ICMP");return}
+    if s["network"] as? String == "noInternet" {throw LinkError.failure("NO_UPSTREAM","VPN已准备但手机实际请求失败")}
+   } catch {failures+=1;if failures>=3 {throw error}}
+   try await Task.sleep(nanoseconds:1_000_000_000)
+  }
+ }
+ private func startNCM(_ id:String,_ serial:String,_ settings:Settings) async throws {
+  snapshot.networkState = .preparing
+  status(.phoneInternet,.preparing,"检查手机NCM能力","ROM限制与无上游互联网分别报告；不会修改Mac网络服务或全局路由")
+  let allDevices=ADB.devices(try await adb.run(nil,["devices"]))
+  guard allDevices.filter({$0.1=="device"}).count==1 else{throw LinkError.failure("NCM_DEVICE_AMBIGUOUS","NCM硬件接口无法可靠关联多台USB手机；本次请仅连接所选手机")}
+  let functions=try await adb.run(serial,["shell","getprop","sys.usb.config"])
+  guard functions.split(separator:",").allSatisfy({$0.allSatisfy{$0.isLetter || $0.isNumber || $0=="_"}}),!functions.isEmpty else{throw LinkError.failure("USB_STATE_UNKNOWN","无法安全保存原USB功能")}
+  guard !functions.split(separator:",").contains("ncm") else{throw LinkError.failure("USB_SHARING_ALREADY_OWNED","NCM已由系统或其他任务开启，未接管或关闭现有共享；请先停止现有共享后再试")}
+  let before=try await NetworkProbe.interfaces()
+  owned[.phoneInternet]?.originalInterface=try await NetworkProbe.defaultInterface()
+  try await launchPhone(.phoneInternet,id,serial,settings,"ncm")
+  while valid(.phoneInternet,id) {
+   let state=try await poll(.phoneInternet,id)
+   if state["cancelled"] as? Bool == true {throw LinkError.failure("USER_CANCELLED","手机取消网络共享")}
+   if state["accepted"] as? Bool == true {break}
+   try await Task.sleep(nanoseconds:1_000_000_000)
+  }
+  guard valid(.phoneInternet,id) else{throw CancellationError()}
+  owned[.phoneInternet]?.oldUSB=functions;try saveJournal()
+  do{let reply = try await adb.run(serial,["shell","svc","usb","setFunctions","ncm,adb"]);if reply.range(of:"error|exception|unsupported|permission denied|invalid",options:[.regularExpression,.caseInsensitive]) != nil {throw LinkError.failure("ROM_UNSUPPORTED",reply)}}catch{snapshot.networkState = .unsupported;throw LinkError.failure("ROM_UNSUPPORTED","系统拒绝CDC-NCM功能切换：\(error.localizedDescription)")}
+  status(.phoneInternet,.waitingUser,"等待手机共享与USB重新识别","在手机系统网络共享页确认USB有线共享；不把USB功能存在视为互联网可用。停止可取消。")
+  while valid(.phoneInternet,id) {
+   try await Task.sleep(nanoseconds:2_000_000_000)
+   let interfaces=try await NetworkProbe.interfaces()
+   let candidates=interfaces.filter{!before.contains($0)}
+   if candidates.count>1 {throw LinkError.failure("NCM_INTERFACE_AMBIGUOUS","出现多个新地址接口，未选择或修改任何Mac路由")}
+   guard let candidate=candidates.first else{
+    continue
+   }
+   ncmInterface=candidate.name;snapshot.networkState = .verifying
+   status(.phoneInternet,.connecting,"验证手机出口","通过新接口的实际HTTPS请求，interface=\(candidate.name)")
+   do{try await NetworkProbe.verify(interface:candidate.name)}catch{snapshot.networkState = .noInternet;throw error}
+   guard valid(.phoneInternet,id) else{throw CancellationError()}
+   guard try await NetworkProbe.defaultInterface()==candidate.name else{
+    snapshot.networkState = .addressed;status(.phoneInternet,.waitingUser,"USB出口可达，等待Mac选用","当前系统默认出口仍是其他接口；请在Mac网络设置检查USB服务及服务顺序。尚未报告整机使用手机网络。停止可取消。")
+    continue
+   }
+   snapshot.networkState = .available
+   status(.phoneInternet,.running,"手机出口请求已验证","绑定USB接口请求已成功；Mac系统默认路由保持系统管理，未修改其他网络服务")
+   if let session=owned[.phoneInternet],let port=session.controlForward {
+    _ = try await ControlClient.request(port:port,body:["command":"ncmState","session":id,"token":session.token,"network":"available"])
+   }
+   ncmMonitor=Task { [weak self] in
+    guard let self=self else{return}
+    while self.valid(.phoneInternet,id) {
+     do {
+      try await Task.sleep(nanoseconds:5_000_000_000)
+      guard self.valid(.phoneInternet,id) else{return}
+      guard try await NetworkProbe.interfaces().contains(candidate) else{throw LinkError.failure("USB_NETWORK_LOST","USB共享接口或地址已离线")}
+      try await NetworkProbe.verify(interface:candidate.name)
+     }catch{
+      guard self.valid(.phoneInternet,id) else{return}
+      await self.stop(.phoneInternet);self.snapshot.networkState = .noInternet;self.status(.phoneInternet,.failed,"USB出口验证未通过",error.localizedDescription);return
+     }
+    }
+   }
+   return
+  }
+ }
+ private func tick() async {
+  let outputs=AudioOutput.devices();snapshot.outputs=outputs
+  if owned[.microphone] != nil,snapshot.settings.outputUID != "default",!outputs.contains(where:{$0.id==snapshot.settings.outputUID}),let id=owned[.microphone]?.id {await failAudio(id,"OUTPUT_REMOVED: 指定输出离线，已停止，避免自动外放")}
+  if let id=owned[.microphone]?.id {
+   if snapshot.receivedFrames>0,Date().timeIntervalSince(lastFrame)>3 {await failAudio(id,"INPUT_INTERRUPTED: 超过3秒没有有效帧")}
+   else if snapshot.receivedFrames==0,let started=requestedRecordingAt,Date().timeIntervalSince(started)>15 {await failAudio(id,"FIRST_FRAME_TIMEOUT: 获准开始采音后15秒未收到帧")}
+  }
+  if let s=owned[.macInternet],snapshot.macInternet.phase == .running {
+   do{let state=try await poll(.macInternet,s.id);if state["cancelled"] as? Bool == true {await stop(.macInternet);status(.macInternet,.stopped,"手机已停止VPN");return};if state["network"] as? String != "available" {throw LinkError.failure("NETWORK_LOST","手机请求验证失败")}}catch{await stop(.macInternet);status(.macInternet,.failed,"网络已中断",error.localizedDescription)}
+  }
+ }
+ private func cleanup(_ s:OwnedSession) async throws {
+  var failures=[String]()
+  if let pid=s.relayPID,let executable=s.relayExecutable {
+   do {
+    let process=try await ProcessRunner.run(URL(fileURLWithPath:"/bin/ps"),["-p",String(pid),"-o","command="],timeout:2,cancellable:false)
+    if process.code==0 {
+     guard process.output.contains(executable),process.output.contains("-DUSBLinkMic.session=\(s.id)") else{throw LinkError.failure("PROCESS_OWNERSHIP_CHANGED","原PID已被其他进程使用，未终止")}
+     kill(pid,SIGTERM)
+     try? await Task.sleep(nanoseconds:300_000_000)
+     let remaining=try await ProcessRunner.run(URL(fileURLWithPath:"/bin/ps"),["-p",String(pid),"-o","command="],timeout:2,cancellable:false)
+     if remaining.code==0,remaining.output.contains(executable),remaining.output.contains("-DUSBLinkMic.session=\(s.id)"){kill(pid,SIGKILL)}
+    }
+   }catch{failures.append(error.localizedDescription)}
+  }
+  if let port=s.controlForward {
+   do{let response=try await ControlClient.request(port:port,body:["command":"stop","session":s.id,"token":s.token]);guard response["session"] as? String==s.id,response["cancelled"] as? Bool==true else{throw LinkError.failure("STOP_NOT_ACKNOWLEDGED","手机未确认取消")}}catch{
+    do{_ = try await adb.run(s.serial,["shell","am","start","-n","com.zjx.usblinkmic/.MainActivity","--es","mode","cancel","--es","session",s.id,"--es","token",s.token],timeout:3)}catch{failures.append(error.localizedDescription)}
+   }
+   do{
+    let mappings=try await adb.run(nil,["forward","--list"],timeout:3)
+    let local="tcp:\(port)"
+    if mappings.split(separator:"\n").contains(where:{$0.split(whereSeparator:{$0.isWhitespace}).contains(Substring(local))}) {
+     guard let target=s.controlTarget,ADB.ownsMapping(mappings,serial:s.serial,local:local,remote:"tcp:\(target)") else{throw LinkError.failure("OWNERSHIP_CHANGED","控制转发归属已改变，未删除")}
+     _ = try await adb.run(s.serial,["forward","--remove",local],timeout:3)
+    }
+   }catch{failures.append(error.localizedDescription)}
+  }
+  if let reverse=s.reverse {do{
+   let mappings=try await adb.run(s.serial,["reverse","--list"],timeout:3)
+   let target=s.module==Workspace.macInternet.rawValue ? "tcp:48128":reverse
+   let lines=mappings.split(separator:"\n").map{$0.split(whereSeparator:{$0.isWhitespace}).map(String.init)}
+   if let match=lines.first(where:{$0.count>=3 && $0[1]==reverse}) {
+    guard match[2]==target else{throw LinkError.failure("OWNERSHIP_CHANGED","USB反向映射已被修改，未删除")}
+    _ = try await adb.run(s.serial,["reverse","--remove",reverse],timeout:3)
+   }
+  }catch{failures.append(error.localizedDescription)}}
+  if let functions=s.oldUSB {do{
+   let current=try await adb.run(s.serial,["shell","getprop","sys.usb.config"],timeout:3)
+   if Set(current.split(separator:","))==Set(["ncm","adb"]) || current=="ncm" {
+    _ = try await adb.run(s.serial,["shell","svc","usb","setFunctions",functions],timeout:3)
+   }else if current != functions {throw LinkError.failure("USB_OWNERSHIP_CHANGED","用户或系统已改变USB功能，未覆盖后续更改")}
+  }catch{failures.append(error.localizedDescription)}}
+  if s.oldUSB != nil,let original=s.originalInterface {
+   do{let restored=try await NetworkProbe.defaultInterface();guard restored==original else{throw LinkError.failure("ROUTE_NOT_RESTORED","原出口尚未恢复；未擅自改写系统路由")};try await NetworkProbe.verify(interface:original)}catch{failures.append(error.localizedDescription)}
+  }
+  if !failures.isEmpty {throw LinkError.failure("CLEANUP_INCOMPLETE",failures.joined(separator:"；"))}
+ }
+ public func stop(_ module:Workspace) async {
+  jobs[module]?.cancel();jobs[module]=nil;jobIDs[module]=nil
+  guard let session=owned.removeValue(forKey:module) else{return}
+  stopping.insert(module);defer{stopping.remove(module)}
+  status(module,.stopping,"正在停止")
+  if module == .microphone {receiver.stop();output.stop();snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected;requestedRecordingAt=nil}
+  if module == .phoneInternet {ncmMonitor?.cancel();ncmMonitor=nil;ncmInterface=nil;snapshot.networkState = .stopped}
+  if module == .macInternet {relay?.terminationHandler=nil;if relay?.isRunning==true {relay?.terminate()};relay=nil;snapshot.networkState = .stopped}
+  do{try await cleanup(session);try saveJournal();status(module,.stopped,"已停止")}
+  catch{owned[module]=session;try? saveJournal();status(module,.failed,"资源恢复待重试",error.localizedDescription,"CLEANUP_INCOMPLETE")}
+ }
+ public func stopAll() async {for module in [Workspace.microphone,.phoneInternet,.macInternet] {await stop(module)}}
+ public func shutdown() async {timer?.cancel();deviceMonitor?.cancel();await stopAll()}
+ private func exportLogs() {
+  let panel=NSSavePanel();panel.nameFieldStringValue="USBLinkMic-diagnostics.txt"
+  if panel.runModal() == .OK,let url=panel.url {do{let text=snapshot.logs.map{"\($0.date.ISO8601Format()) \($0.module) \($0.stage) \($0.message)"}.joined(separator:"\n");try LogRedactor.redact(text).write(to:url,atomically:true,encoding:.utf8)}catch{log("logs","exportFailed",error.localizedDescription)}}
+ }
+}

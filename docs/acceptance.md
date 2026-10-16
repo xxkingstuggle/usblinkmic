@@ -1,0 +1,30 @@
+# 冻结验收矩阵
+
+基线24项，不删项、不放宽。以下均不是整项pass；自动化仅是列明的下层证据，未执行真机项标待批准。
+
+|ID|规格场景|自动化入口/证据及实现状态|场景结论|
+|---|---|---|---|
+|T01|无手机、USB 未授权、离线分别启动|CoreTests设备解析与失败分类；真实ADB未授权/离线待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T02|两台手机在线并切换目标|固定serial与UUID资源归属已实现；两台手机命令去向待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T03|手机没有配套 App，首次启动|内置APK/hash、install -r与协议Provider复查已实现；首次安装确认待批准。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T04|兼容 App 已存在|协议4能力Provider及独立握手；兼容不重装待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T05|用户拒绝 USB 安装|INSTALL_DENIED分类单测通过；系统拒绝路径待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T06|签名冲突、旧版或高版本|签名冲突/降级分类单测通过；从不卸载/-d；真实坏包与高版本待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T07|首次录音授权|可见会话确认→系统权限→同一请求恢复已实现；待手机弹窗证据。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T08|拒绝录音、需要设置、拒绝通知|拒绝、永久拒绝与通知独立状态已实现；待各Android版本实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T09|跳过向导、部分完成、完成声音测试|UI渲染通过；跳过/完成分别建模；完成声音证明待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T10|USB 音频，讲话与静音各一段|碎片与全零有效PCM单测通过；不作为真实音频证据。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T11|首包超时、坏帧、端口占用、录音硬件失败|坏帧失败→新解码器恢复单测通过；端口/硬件/首包反向路径待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T12|Wi-Fi 地址保存、失联、第二连接|地址/配对码/单发送端已实现；真实LAN断连及第二台连接待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T13|本机试听与外部软件输入|AVAudioEngine/BlackHole输出与指引已实现；试听/外部录音待用户实测。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T14|输出设备拔出、重插、重名、系统默认变化|稳定UID与拔出停止已实现；热插拔/重名/系统默认变化待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T15|首次 VPN 授权，延迟确认和拒绝|确认+VPN系统授权+取消清理已实现；延迟/拒绝待手机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T16|手机供网成功、ROM 不支持、无上游网|NCM切换、系统共享页与绑定接口HTTPS探测已实现；默认路由选择及ROM能力未证明。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T17|Mac 反向供网，DNS/上游断开|真实Java relay本地UDP往返、退出/无应答负例通过；手机VPN/DNS/HTTPS仍待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T18|插拔 USB、USB 重枚举、设备切换、重复启停|UUID取消检查/指定serial/方向互斥已实现；设备重枚举与组合恢复待真机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T19|导出含设备、地址和目录的诊断|Swift/Android结构化脱敏单测通过；真实诊断导出需用户审阅。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T20|修改设置后取消、保存、重启 App|Swift5/Android4单测包含保存前校验、原子持久化与schema拒绝；App重启实测待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T21|所有参数逐项检查与不支持硬件|两端统一候选参数与实际AudioRecord探测已实现；具体硬件能力待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T22|停止全部、正常退出、异常退出后重开|进程非零/超时单测通过，资源journal与退出上限已实现；真实崩溃与恢复待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T23|音频+手机供网；音频+反向供网；供网方向切换|方向切换必须等清理成功；音频+双方向组合/重枚举仍待真机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T24|安装最终发行包的普通用户环境|配套包/运行时/工具构建打包待审阅；Developer ID/公证缺失与普通用户安装待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
