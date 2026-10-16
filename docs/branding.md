@@ -4,4 +4,4 @@
 
 此次仅获准读取和复制旧库的图标图片及图标资源定义，没有读取旧业务源码、测试或历史实现。来源、目标和SHA256逐文件记录于icon-provenance.json；复制的PNG字节与旧图一致。
 
-Mac保留旧图的全部尺寸，使用系统iconutil打成AppIcon.icns，并由CFBundleIconFile引用。Android保留旧密度/圆形PNG和白底自适应图标定义，不采用本轮临时设计的蓝底图标。
+Mac保留旧图的全部尺寸，将原PNG字节直接封装为AppIcon.icns（不缩放、转换图片），并由CFBundleIconFile引用。Android保留旧密度/圆形PNG和白底自适应图标定义，不采用本轮临时设计的蓝底图标。

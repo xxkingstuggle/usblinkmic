@@ -40,7 +40,7 @@ cp third_party/gnirehtet/LICENSE "$app/Contents/Resources/licenses/Gnirehtet-LIC
 cp artifacts/relay.jar "$app/Contents/Resources/relay.jar"
 ditto artifacts/runtime-build/runtime "$app/Contents/Resources/runtime"
 cp docs/dependencies.md "$app/Contents/Resources/licenses/dependencies.md"
-iconutil -c icns macos/Resources/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
+python3 scripts/package-icon.py macos/Resources/AppIcon.iconset "$app/Contents/Resources/AppIcon.icns"
 python3 - "$app" <<'PY'
 from pathlib import Path
 import sys,plistlib
