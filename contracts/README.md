@@ -48,6 +48,17 @@ Crash recovery records relay PID plus executable path and unique JVM session pro
 - shutdown异步返回资源是否恢复；App退出等待该结果，取消5秒提前退出。失败保留UI/归属日志供重试，退出期间禁止新任务。
 
 ## 4.0.5 Mac直接启动与准确服务选择
+
+4.0.5入口存在后续启动任务复用回归，已定位于docs/diagnosis-4.0.5-20261016.md；当前修复候选为下述4.0.6，不以旧构建证据宣称入口可用。
 - 依据用户新决定，移除应用内每次会话确认；accepted表示已接受受保护入口的Mac命令，不表示系统录音/VPN权限已经授予。recording、真实共享及HTTPS/默认出口仍分别确认，权限等待不计首包超时。通知许可不是启动门槛。
 - 新控制入口com.zjx.usblinkmic/.AdbControlActivity由DUMP权限保护，MainActivity只消费同进程一次性ticket。能力报告controlComponent，Mac要求runtimeRevision405并校验该组件；两端成套升级，协议4/schema1未改。journal新增可选controlComponent供精确取消，旧记录保留旧入口。
 - getFunctions成功空串为none，getprop空串或失败仍未知。服务发现基线包含持久服务，明确安卓优先，离线iPhone不作为新USB候选。歧义与业务验证门槛不变。
+
+
+## 4.0.6 可靠命令与资源恢复
+
+- 两端runtimeRevision406，版本4.0.6/40006，协议4/schema1不变。受保护控制入口为独立、无历史、无affinity的瞬时任务；Mac以NEW_TASK|MULTIPLE_TASK执行每条命令，入口再以NEW_TASK转交主界面。onCreate/onNewIntent均处理票据，公开launcher仍拒绝原始会话extras。
+- 取消请求附带原controlPort；尚未登记的会话保存取消墓碑并提供鉴权取消状态。Mac在stop命令或后备Activity启动后必须收到protocol4、匹配session、cancelled=true回执，才移除控制通道；未确认保留journal并报告CLEANUP_INCOMPLETE。
+- journal新增可选ncmBorrowed字段。仅usb0已有共享时借用已有请求，不重新start/stop；其它不明确USB/以太网共享拒绝操作。本次USB模式与Mac服务改动仍有原值和回滚记录；真实接口HTTPS与默认出口条件不变，不据已有共享直接显示可用。此策略替代4.0.5对所有已有usb0一律拒绝，保留用户原共享。
+- 清理中owned持续存在，stopping排除有效任务；Stop/Save/Quit等待同一不继承取消的清理任务。只有清理成功和journal保存成功才释放所有权。共享请求停止不再被未知USB读数跳过，USB恢复独立校验归属。
+- 安卓在私有filesDir保留有界脱敏JSONL日志并恢复最近500条，Logcat标签USBLinkMic同步阶段；不记录票据、token或原始Intent。Mac记录脱敏am结果，区分命令拒绝、会话登记和取消回执。

@@ -8,7 +8,7 @@ import android.os.Bundle
 import com.zjx.usblinkmic.contracts.*
 /** Read-only protocol discovery for adb shell; never requests permission or starts a service. */
 class CapabilityProvider:ContentProvider() {
- override fun onCreate()=true
+ override fun onCreate():Boolean {context?.let{Runtime.attach(it)};return true}
  override fun call(method:String,arg:String?,extras:Bundle?):Bundle {
   val uid=Binder.getCallingUid()
   check(uid==2000 || uid==android.os.Process.myUid() || uid==1000){"CAPABILITIES_READ_DENIED"}

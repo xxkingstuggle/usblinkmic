@@ -9,12 +9,26 @@ import com.zjx.usblinkmic.platform.Runtime
 class AdbControlActivity : Activity() {
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState)
-  if (savedInstanceState == null) {
-   val ticket = Runtime.stageAdbCommand(intent)
+  forward(intent)
+ }
+ override fun onNewIntent(intent: Intent) {
+  super.onNewIntent(intent)
+  setIntent(intent)
+  forward(intent)
+ }
+ private fun forward(command: Intent) {
+  Runtime.attach(this)
+  val mode=command.getStringExtra("mode")?.takeIf{it in listOf("audio","vpn","ncm","cancel")} ?: "invalid"
+  Runtime.log("control","entryReceived","受保护命令入口已执行；mode=$mode")
+  try {
+   val ticket = Runtime.stageAdbCommand(command)
+   // The transient control task must never become the public launcher's task identity.
    startActivity(Intent(this, MainActivity::class.java)
     .putExtra("controlTicket", ticket)
-    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-  }
-  finish()
+    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+   Runtime.log("control","ticketForwarded","命令已转交主界面")
+  } catch(e: Exception) {
+   Runtime.log("control","entryFailed",e.message ?: e.javaClass.simpleName)
+  } finally {finish()}
  }
 }

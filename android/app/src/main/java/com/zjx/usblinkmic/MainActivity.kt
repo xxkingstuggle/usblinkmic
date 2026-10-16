@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity() {
  }
  override fun onCreate(savedInstanceState: Bundle?) {
   super.onCreate(savedInstanceState)
+  Runtime.attach(this)
   try { Runtime.update { it.copy(settings=SettingsStore(this).load()) } } catch(e: Exception) { Runtime.log("settings","loadFailed",e.message ?: "配置无法读取") }
   pending=savedInstanceState?.getString("pendingSession")?.let { Runtime.requests[it] }
   setContent { LinkMicScreen(Runtime.state.value, ::action) }
@@ -51,15 +52,19 @@ class MainActivity : ComponentActivity() {
  }
  private fun receive(launch: Intent) {
   val ticket=launch.getStringExtra("controlTicket") ?: return
-  val intent=Runtime.consumeAdbCommand(ticket) ?: return
+  val intent=Runtime.consumeAdbCommand(ticket) ?: run {Runtime.log("control","ticketRejected","命令票据已消费、过期或随进程重启失效");return}
+  Runtime.log("control","ticketConsumed","已消费受保护入口的一次性票据")
   val mode=intent.getStringExtra("mode") ?: return
   val session=intent.getStringExtra("session") ?: return
   val token=intent.getStringExtra("token") ?: return
-  if(!token.matches(Regex("[a-fA-F0-9]{32}")) || session.length>64) return
+  if(!token.matches(Regex("[a-fA-F0-9]{32}")) || session.isBlank() || session.length>64) {Runtime.log("control","invalidCommand","会话标识或凭据格式无效");return}
   if(mode=="cancel"){
    val previous=Runtime.requests[session]
+   if(previous!=null && !java.security.MessageDigest.isEqual(previous.token.toByteArray(),token.toByteArray())){Runtime.log("control","cancelRejected","取消凭据与原会话不符");return}
    if(previous!=null && java.security.MessageDigest.isEqual(previous.token.toByteArray(),token.toByteArray()))Runtime.stop(this,previous)
    else if(previous==null)Runtime.cancelledSessions[session]=token
+   try {Runtime.beginControl(this,intent.getIntExtra("controlPort",48125))}catch(e: Exception){Runtime.log("control","cancelReceiptFailed",e.message ?: "控制通道不可用")}
+   Runtime.log("control","cancelReceived","已处理本次取消请求")
    return
   }
   if(mode !in listOf("audio","vpn","ncm") || Runtime.cancelledSessions[session]==token) return
@@ -123,7 +128,7 @@ class MainActivity : ComponentActivity() {
    UserAction.StopAudio -> (Runtime.audioRequest ?: pending?.takeIf { it.mode=="audio" || it.mode=="wifi" })?.let{Runtime.stop(this,it)}
    UserAction.StopVpn -> (Runtime.vpnRequest ?: pending?.takeIf { it.mode=="vpn" })?.let{Runtime.stop(this,it)}
    UserAction.Refresh -> Runtime.log("status","refresh","状态来自当前服务，未自动启动任务")
-   UserAction.ClearLogs -> Runtime.update{it.copy(logs=emptyList())}
+   UserAction.ClearLogs -> Runtime.clearLogs()
    UserAction.OpenSystemSettings -> startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName")))
    is UserAction.SaveSettings -> try {SettingsStore(this).save(action.settings);Runtime.audioRequest?.let{Runtime.stop(this,it)};Runtime.update{it.copy(settings=action.settings)} }catch(e: Exception){Runtime.log("settings","failed",e.message ?: "保存失败")}
   }

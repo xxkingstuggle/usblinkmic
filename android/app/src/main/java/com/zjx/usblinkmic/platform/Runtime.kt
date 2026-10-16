@@ -10,6 +10,8 @@ import androidx.compose.runtime.mutableStateOf
 import com.zjx.usblinkmic.contracts.*
 import com.zjx.usblinkmic.support.*
 import org.json.JSONObject
+import android.util.Log
+import java.io.File
 import java.net.ServerSocket
 import java.net.InetAddress
 import java.util.UUID
@@ -40,8 +42,46 @@ object Runtime {
  }
  private var server: ServerSocket? = null
  private val main = android.os.Handler(android.os.Looper.getMainLooper())
+ private var diagnosticFile: File? = null
+ @Synchronized fun attach(context: Context) {
+  if(diagnosticFile!=null)return
+  val file=File(context.applicationContext.filesDir,"diagnostics.jsonl")
+  diagnosticFile=file
+  try {
+   if(file.isFile && file.length()<=262144) {
+    val history=file.readLines().takeLast(500).mapNotNull {line -> try {
+     val row=JSONObject(line)
+     LogEntry(row.getLong("timestamp"),row.getString("module"),row.getString("stage"),LogRedactor.redact(row.getString("message")))
+    }catch(_:Exception){null} }
+    update {it.copy(logs=(history+it.logs).takeLast(500))}
+   }
+  }catch(e:Exception){Log.e("USBLinkMic","diagnostics load failed: ${e.javaClass.simpleName}")}
+ }
+ @Synchronized private fun persist(entry: LogEntry) {
+  val file=diagnosticFile ?: return
+  try {
+   if(file.exists() && file.length()>196608) {
+    val retained=file.readLines().takeLast(200).joinToString("\n",postfix="\n").toByteArray()
+    file.writeBytes(retained.takeLast(131072).toByteArray())
+   }
+   val row=JSONObject().put("timestamp",entry.timestamp).put("module",entry.module).put("stage",entry.stage).put("message",entry.message)
+   file.appendText(row.toString()+"\n")
+  }catch(e:Exception){Log.e("USBLinkMic","diagnostics write failed: ${e.javaClass.simpleName}")}
+ }
+ @Synchronized fun clearLogs() {
+  try {diagnosticFile?.writeText("");update {it.copy(logs=emptyList())}}
+  catch(e:Exception){Log.e("USBLinkMic","diagnostics clear failed: ${e.javaClass.simpleName}")}
+ }
  fun update(block: (AppSnapshot) -> AppSnapshot) { main.post { state.value = block(state.value) } }
- fun log(module: String, stage: String, message: String) = update { it.copy(logs = (it.logs + LogEntry(module = module, stage = stage, message = LogRedactor.redact(message))).takeLast(500)) }
+ fun log(module: String, stage: String, message: String) {
+  var safe=message
+  for(token in requests.values.map{it.token}+cancelledSessions.values) if(token.isNotEmpty())safe=safe.replace(token,"[REDACTED]")
+  safe=LogRedactor.redact(safe).take(2048)
+  val entry=LogEntry(module=module,stage=stage,message=safe)
+  persist(entry)
+  Log.i("USBLinkMic","$module/$stage: $safe")
+  update {it.copy(logs=(it.logs+entry).takeLast(500))}
+ }
  fun parametersSupported(p: AudioParameters): Boolean {
   val encoding = if (p.format == PCMFormat.I16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_FLOAT
   val channels = if (p.channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
@@ -63,7 +103,9 @@ object Runtime {
       val command = JSONObject(bytes.toByteArray().toString(Charsets.UTF_8))
       val request = requests[command.optString("session")]
       val authorized = request != null && java.security.MessageDigest.isEqual(command.optString("token").toByteArray(), request.token.toByteArray())
-      val reply = if (!authorized) JSONObject().put("error", "AUTH_REQUIRED") else {
+      val tombstone=cancelledSessions[command.optString("session")]
+      val cancelledBeforeStart=request==null && tombstone!=null && java.security.MessageDigest.isEqual(command.optString("token").toByteArray(),tombstone.toByteArray())
+      val reply = if(cancelledBeforeStart) JSONObject().put("protocol",4).put("session",command.optString("session")).put("cancelled",true).put("accepted",false).put("error","") else if (!authorized) JSONObject().put("error", "AUTH_REQUIRED") else {
        request!!
        if(command.optString("command")=="ncmState" && request.mode=="ncm" && request.accepted && !request.cancelled && command.optString("network")=="available") update { it.copy(phoneInternet=ModuleStatus(TaskPhase.RUNNING,"Mac已验证USB出口实际请求")) }
        if (command.optString("command") == "stop") { request.cancelled = true; stop(context, request) }
