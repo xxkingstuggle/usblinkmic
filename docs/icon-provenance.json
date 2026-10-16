@@ -1,120 +1,113 @@
 {
-  "authorization": "User explicitly requested reading old repository icons and retaining both platform icons until user requests a change. Only icon assets/definitions were read; no business implementation was consulted.",
+  "authorization": "User supplied replacement artwork on2026-10-17 for both platforms; supersedes legacy icon retention.",
+  "source": "assets/branding/app-icon-source.png",
+  "sourceSHA256": "41c3c3a53a58f6f6d7fd79885199e17bb6a8d3eda8e11f8f2dd6c19885924fe7",
+  "conversion": "macOS sips proportional square resizing; full original image retained; no redraw, cropping or color change. Android adaptive foreground adds12dp safe padding.",
   "assets": [
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-16.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_16x16.png",
-      "sha256": "79dd57f8187a15e4e05e8c0108470be513e4189ff9f74747630046672c459044"
+      "path": "macos/Resources/AppIcon.iconset/icon_16x16.png",
+      "pixels": 16,
+      "sha256": "33c3ddd6c9bede0ab99258a27ba317dc175ed851848bb1274653660040765977"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-16@2x.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_16x16@2x.png",
-      "sha256": "773e957591390d93c423d0fe13cd7d4702cf7a67e99c45ab801985538db78b46"
+      "path": "macos/Resources/AppIcon.iconset/icon_16x16@2x.png",
+      "pixels": 32,
+      "sha256": "1362d8945ff0992226085d574969bcc8070cd4238624a77b3b8f367cc60dc241"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-32.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_32x32.png",
-      "sha256": "773e957591390d93c423d0fe13cd7d4702cf7a67e99c45ab801985538db78b46"
+      "path": "macos/Resources/AppIcon.iconset/icon_32x32.png",
+      "pixels": 32,
+      "sha256": "1362d8945ff0992226085d574969bcc8070cd4238624a77b3b8f367cc60dc241"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-32@2x.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_32x32@2x.png",
-      "sha256": "dadef6f4860caa21a09b285b72b58af96ba1c1532a80cf4dfbd9850db5b15723"
+      "path": "macos/Resources/AppIcon.iconset/icon_32x32@2x.png",
+      "pixels": 64,
+      "sha256": "1e052b26ca361b491374b22841546060c2a2063d5356172a8d257866a21e5a79"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-128.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_128x128.png",
-      "sha256": "922b742cc4c4815134443157516769ae217d6dfff3b8b7dec3b973f06eae8be4"
+      "path": "macos/Resources/AppIcon.iconset/icon_128x128.png",
+      "pixels": 128,
+      "sha256": "aee34a58472c273b41318bff7aedb1f6be87cf3af9fe073fbc1f9478da8752ad"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-128@2x.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_128x128@2x.png",
-      "sha256": "ffdb20c8775801e91ef09b86d1015e7071eee9766fd0cb515cbb6442f71c064a"
+      "path": "macos/Resources/AppIcon.iconset/icon_128x128@2x.png",
+      "pixels": 256,
+      "sha256": "630794ce2a38021eca1af50ab21957142c8c43afbcf15ce716e0a14f7235f428"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-256.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_256x256.png",
-      "sha256": "ffdb20c8775801e91ef09b86d1015e7071eee9766fd0cb515cbb6442f71c064a"
+      "path": "macos/Resources/AppIcon.iconset/icon_256x256.png",
+      "pixels": 256,
+      "sha256": "630794ce2a38021eca1af50ab21957142c8c43afbcf15ce716e0a14f7235f428"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-256@2x.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_256x256@2x.png",
-      "sha256": "d651e50b20694723096f0483b49c437ee28ec39b9881c4c1c5c54bcd2c8082ff"
+      "path": "macos/Resources/AppIcon.iconset/icon_256x256@2x.png",
+      "pixels": 512,
+      "sha256": "729f3a5ee345ab05e9a92a53aeb06951d6a4ca9af231a748c827ac0a238286c2"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-512.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_512x512.png",
-      "sha256": "d651e50b20694723096f0483b49c437ee28ec39b9881c4c1c5c54bcd2c8082ff"
+      "path": "macos/Resources/AppIcon.iconset/icon_512x512.png",
+      "pixels": 512,
+      "sha256": "729f3a5ee345ab05e9a92a53aeb06951d6a4ca9af231a748c827ac0a238286c2"
     },
     {
-      "oldAsset": "mac-native/USBLinkMicNative/Assets.xcassets/AppIcon.appiconset/mac-icon-1024.png",
-      "newAsset": "macos/Resources/AppIcon.iconset/icon_512x512@2x.png",
-      "sha256": "cc1bc9b17d85b80abbc49af93466d584537db726a9d6ade4a67e916378e168cd"
+      "path": "macos/Resources/AppIcon.iconset/icon_512x512@2x.png",
+      "pixels": 1024,
+      "sha256": "0625369e7601dde70fd9d1c762b7fd62af264c3677ff94d963610087320cf346"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
-      "newAsset": "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
-      "sha256": "1fdd2ff10e4b28978c871c57a9d272aeb3f695655eb5bcf090b2e3a1d20d611f"
+      "path": "android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
+      "pixels": 48,
+      "sha256": "600860dde079d247b3fa1957759edc806066fc3f445c2bf8f0650580ed0a0305"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
-      "newAsset": "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
-      "sha256": "1fdd2ff10e4b28978c871c57a9d272aeb3f695655eb5bcf090b2e3a1d20d611f"
+      "path": "android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
+      "pixels": 48,
+      "sha256": "600860dde079d247b3fa1957759edc806066fc3f445c2bf8f0650580ed0a0305"
     },
     {
-      "oldAsset": "android/app/src/main/res/drawable/ic_launcher_full.png",
-      "newAsset": "android/app/src/main/res/drawable/ic_launcher_full.png",
-      "sha256": "e614901b28aa0d521d5c0aeaeabdc6c10c16c5b03de52c10f551cf71bad4bb5d"
+      "path": "android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
+      "pixels": 72,
+      "sha256": "6a3b2744234b249dbc3cfad6e2b6f724f7bfe18a24b75a55017fd0acd7c707c2"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
-      "newAsset": "android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
-      "sha256": "4684a73f64e0817ff2215e4642e6d098e27c092691aac8e97a10a1cab62d5cc9"
+      "path": "android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
+      "pixels": 72,
+      "sha256": "6a3b2744234b249dbc3cfad6e2b6f724f7bfe18a24b75a55017fd0acd7c707c2"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
-      "newAsset": "android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
-      "sha256": "4684a73f64e0817ff2215e4642e6d098e27c092691aac8e97a10a1cab62d5cc9"
+      "path": "android/app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+      "pixels": 96,
+      "sha256": "2a8973a35f98b8f5200d9756c105c8f1cff8def6abb5d7151ca0a5a312dca465"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
-      "newAsset": "android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
-      "sha256": "f08e7bce2e67108cfff8f107e795a6be73fbb3b605f87f95c3edc84493cd7ee1"
+      "path": "android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
+      "pixels": 96,
+      "sha256": "2a8973a35f98b8f5200d9756c105c8f1cff8def6abb5d7151ca0a5a312dca465"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
-      "newAsset": "android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
-      "sha256": "f08e7bce2e67108cfff8f107e795a6be73fbb3b605f87f95c3edc84493cd7ee1"
+      "path": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+      "pixels": 144,
+      "sha256": "c0f1fd40e0462e5a8329977808392b1eeee1c07d5da113a066d8bbbf0e2c51df"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-xhdpi/ic_launcher.png",
-      "newAsset": "android/app/src/main/res/mipmap-xhdpi/ic_launcher.png",
-      "sha256": "2538a02a656f2b95c5fded7de4e63685000c2dde853fb5f650d82195da6c8f16"
+      "path": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
+      "pixels": 144,
+      "sha256": "c0f1fd40e0462e5a8329977808392b1eeee1c07d5da113a066d8bbbf0e2c51df"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
-      "newAsset": "android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
-      "sha256": "2538a02a656f2b95c5fded7de4e63685000c2dde853fb5f650d82195da6c8f16"
+      "path": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+      "pixels": 192,
+      "sha256": "22c615086595340832fba11a673a172518e7a44ff56115cdd2dfae8f2c726c9c"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
-      "newAsset": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
-      "sha256": "b4b84773a9c7ff501332ec23e0ab8fff8fdbdb242da9aa2299de869e01e7c501"
+      "path": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
+      "pixels": 192,
+      "sha256": "22c615086595340832fba11a673a172518e7a44ff56115cdd2dfae8f2c726c9c"
     },
     {
-      "oldAsset": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
-      "newAsset": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
-      "sha256": "b4b84773a9c7ff501332ec23e0ab8fff8fdbdb242da9aa2299de869e01e7c501"
-    },
-    {
-      "oldAsset": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
-      "newAsset": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
-      "sha256": "f21eb5c53b9884c3ce177d55c5e2346b8279d8718d04dcfa899b9f268fea1ec9"
-    },
-    {
-      "oldAsset": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
-      "newAsset": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
-      "sha256": "f21eb5c53b9884c3ce177d55c5e2346b8279d8718d04dcfa899b9f268fea1ec9"
+      "path": "android/app/src/main/res/drawable/ic_launcher_full.png",
+      "pixels": 432,
+      "sha256": "d1d309f99d8f5332b316a2cd060cc7d943873134a7bfc09ac94f72a5eedb90ae"
     }
   ]
 }

@@ -1,7 +1,7 @@
-# 图标约定
+# 当前图标约定 — 2026-10-17
 
-按用户2026-10-16明确决定，重建版的Android和Mac都沿用旧仓库的图标，直到用户另行要求更换。不得因重建、界面调整或打包而自动重新设计图标。
+用户指定的新图为assets/branding/app-icon-source.png，Mac和Android统一使用。此决定覆盖2026-10-16沿用旧图标的决定。原图完整保存，SHA256与21个派生尺寸见icon-provenance.json；历史旧图标来源记录保留于icon-provenance-legacy-4.0.2.json，不代表当前资源。
 
-此次仅获准读取和复制旧库的图标图片及图标资源定义，没有读取旧业务源码、测试或历史实现。来源、目标和SHA256逐文件记录于icon-provenance.json；复制的PNG字节与旧图一致。
+运行python3 scripts/prepare-icons.py从原图经系统sips生成Mac16—1024像素与Android各密度PNG，不重绘、不裁切。Android自适应图标白底/12dp安全边距，普通及圆形launcher均引用新图。Mac使用系统iconutil生成标准ICNS，由CFBundleIconFile引用；启动时加载bundle内图标到applicationIconImage，侧栏品牌使用相同图像。
 
-Mac保留旧图的全部尺寸，将原PNG字节直接封装为AppIcon.icns（不缩放、转换图片），并由CFBundleIconFile引用。Android保留旧密度/圆形PNG和白底自适应图标定义，不采用本轮临时设计的蓝底图标。
+版本4.0.8/40008/runtime408仅图标、打包与版本更新，protocol4/controlRevision1及音频/供网逻辑保持4.0.7。更新runtime是为了让已安装旧配套的手机在下一次启动功能前更新新图标。不得擅自重置Dock/Finder全局缓存或删除应用数据。

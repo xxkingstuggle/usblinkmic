@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Contracts
 import Support
 
@@ -148,9 +149,10 @@ public struct RootView: View {
 
     private var brand: some View {
         HStack(spacing: 10) {
-            Image(systemName: "cable.connector.horizontal")
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(.tint)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 1) {
                 Text("USB LinkMic")
                     .font(.headline)
