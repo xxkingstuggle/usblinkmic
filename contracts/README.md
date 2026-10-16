@@ -1,4 +1,6 @@
 # Frozen contract v1 / wire protocol 4
+
+当前覆盖条款：4.0.7用户决定与控制子协议1见[connection-control-v1.md](connection-control-v1.md)。以下早期公网探测、每次应用内确认与5秒退出描述为历史基线，冲突处以该补充及4.0.5/4.0.6条款为准。
 Canonical parameter sets and default values: macos/Contracts/Models.swift and android/.../contracts/Models.kt. Changes belong to main executor only. UI consumes snapshots and emits UserAction; never fabricates device/audio/network state.
 
 ## State and ownership

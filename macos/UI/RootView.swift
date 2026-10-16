@@ -202,7 +202,7 @@ public struct RootView: View {
                 case .phoneInternet:
                     networkWorkspace(
                         title: "手机网络给 Mac",
-                        description: "通过 USB 使用手机网络。链路状态与实际网络可用性分别显示。",
+                        description: "通过 USB 使用手机网络，显示共享接口的连接状态。",
                         status: snapshot.phoneInternet,
                         networkState: snapshot.phoneInternet.phase == .stopped ? .stopped:snapshot.networkState,
                         workspace: .phoneInternet
@@ -210,7 +210,7 @@ public struct RootView: View {
                 case .macInternet:
                     networkWorkspace(
                         title: "Mac 网络给手机",
-                        description: "等待手机 VPN 授权，并以实际网络探测确认连接结果。",
+                        description: "等待手机 VPN 授权，显示 VPN 与 USB 转发通道的连接状态。",
                         status: snapshot.macInternet,
                         networkState: snapshot.macInternet.phase == .stopped ? .stopped:snapshot.networkState,
                         workspace: .macInternet
@@ -552,7 +552,7 @@ private struct NetworkStateCard: View {
                 .foregroundStyle(state.tint)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 3) {
-                Text("网络可用性：\(state.label)")
+                Text("连接状态：\(state.label)")
                     .font(.callout.weight(.semibold))
                 Text(state.explanation)
                     .font(.caption)
@@ -1108,9 +1108,9 @@ private extension NetworkState {
         case .stopped: "已停止"
         case .preparing: "链路准备中"
         case .addressed: "已获得地址"
-        case .verifying: "出口验证中"
-        case .available: "网络可用"
-        case .noInternet: "链路存在但无外网"
+        case .verifying: "确认连接中"
+        case .available: "已连接"
+        case .noInternet: "连接异常"
         case .unsupported: "设备不支持或受限"
         case .failed: "故障"
         }
@@ -1118,10 +1118,10 @@ private extension NetworkState {
 
     var explanation: String {
         switch self {
-        case .available: "控制器已完成实际网络探测。"
-        case .noInternet: "连接链路已建立，但当前没有可用外网。"
+        case .available: "USB共享或VPN转发通道已就绪。"
+        case .noInternet: "请检查设备和转发连接。"
         case .unsupported: "设备能力或系统限制阻止了此功能。"
-        case .preparing, .addressed, .verifying: "仍在准备或验证，尚未确认网络可用。"
+        case .preparing, .addressed, .verifying: "仍在准备或连接，尚未就绪。"
         case .failed: "查看当前任务阶段和日志中的错误原因。"
         case .stopped: "尚未启动网络共享任务。"
         }

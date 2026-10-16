@@ -46,15 +46,15 @@ import Foundation
   }while ProcessInfo.processInfo.systemUptime<deadline
   throw LinkError.failure("USB_RECONNECT_TIMEOUT","USB切换后未重新连接；请接回同一部手机后重试停止以恢复")
  }
- func setFunctions(_ value:String,serial:String,respectCancellation:Bool=true) async throws {
+ func setFunctions(_ value:String,serial:String,respectCancellation:Bool=true,reconnectSeconds:TimeInterval=45,confirmationSeconds:TimeInterval=15) async throws {
   guard Self.validFunctions(value) else{throw LinkError.failure("USB_STATE_UNKNOWN","USB功能值无效")}
   let result=try await ProcessRunner.run(adb.executable,["-s",serial,"shell","svc","usb","setFunctions",value],timeout:8,cancellable:false)
   trace("usbSetFunctions","requested=\(value), exit=\(result.code), output=\(result.output.prefix(1200))")
   if result.output.range(of:"SecurityException|permission denied|unknown function|invalid function|not supported",options:[.regularExpression,.caseInsensitive]) != nil {
    throw LinkError.failure("ROM_UNSUPPORTED",result.output)
   }
-  try await waitForDevice(serial,respectCancellation:respectCancellation)
-  let deadline=ProcessInfo.processInfo.systemUptime+15
+  try await waitForDevice(serial,seconds:reconnectSeconds,respectCancellation:respectCancellation)
+  let deadline=ProcessInfo.processInfo.systemUptime+confirmationSeconds
   var last=""
   repeat {
    if respectCancellation {try Task.checkCancellation()}
@@ -71,7 +71,7 @@ import Foundation
     } catch {
      guard case LinkError.failure(let code,_) = error,["DEVICE_DISCONNECTED","DEVICE_OFFLINE","USB_UNAUTHORIZED"].contains(code) else{throw error}
      trace("usbReenumerating",error.localizedDescription)
-     try await waitForDevice(serial,respectCancellation:respectCancellation)
+     try await waitForDevice(serial,seconds:reconnectSeconds,respectCancellation:respectCancellation)
      // The first get-state can precede a delayed gadget reset. Re-read after it.
      let reconnected=try await usbState(serial)
      if let active=reconnected.active,Self.functions(active).contains("ncm") {trace("usbFunctions",reconnected.summary);return}

@@ -15,6 +15,7 @@ class CapabilityProvider:ContentProvider() {
   require(method=="capabilities"){"UNKNOWN_READ_METHOD"}
   return Bundle().apply {
    putInt("protocol",Capabilities.PROTOCOL_VERSION)
+   putInt("controlRevision",Capabilities.CONTROL_REVISION)
    putInt("runtimeRevision",Capabilities.RUNTIME_REVISION)
    putString("version",Capabilities.VERSION)
    putString("controlComponent",Capabilities.CONTROL_COMPONENT)

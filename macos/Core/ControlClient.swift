@@ -1,8 +1,10 @@
 import Foundation
 import Darwin
+import Contracts
 public enum ControlClient {
  public static func request(port:Int, body:[String:Any]) async throws -> [String:Any] {
-  let data=try JSONSerialization.data(withJSONObject:body)+Data([10])
+  var message=body;message["controlRevision"]=Capabilities.controlRevision
+  let data=try JSONSerialization.data(withJSONObject:message)+Data([10])
   let response:Data = try await withCheckedThrowingContinuation { continuation in
    DispatchQueue.global().async {
     let fd=socket(AF_INET,SOCK_STREAM,0); guard fd>=0 else {continuation.resume(throwing:LinkError.failure("CONTROL_SOCKET","无法创建控制通道"));return}
@@ -20,6 +22,8 @@ public enum ControlClient {
     continuation.resume(returning:received.prefix(upTo:end))
    }
   }
-  guard let object=try JSONSerialization.jsonObject(with:response) as? [String:Any] else {throw LinkError.failure("CONTROL_INVALID","状态响应无效")};return object
+  guard let object=try JSONSerialization.jsonObject(with:response) as? [String:Any] else {throw LinkError.failure("CONTROL_INVALID","状态响应无效")}
+  guard object["controlRevision"] as? Int==Capabilities.controlRevision else{throw LinkError.failure("CONTROL_REVISION_MISMATCH","手机控制子协议不匹配，请成套升级")}
+  return object
  }
 }

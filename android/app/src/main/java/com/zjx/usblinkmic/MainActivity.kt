@@ -85,7 +85,7 @@ class MainActivity : ComponentActivity() {
  private fun authorize(request: Request) {
   if(request.mode=="ncm") {
    if(pending===request) pending=null
-   Runtime.update{it.copy(phoneInternet=ModuleStatus(TaskPhase.PREPARING,"Mac正在配置本次USB共享","等待USB重枚举与系统共享回调；Mac实际请求验证后才显示可用"))}
+   Runtime.update{it.copy(phoneInternet=ModuleStatus(TaskPhase.PREPARING,"Mac正在配置本次USB共享","等待USB重枚举、系统共享回调及Mac接口地址"))}
    return
   }
   if(request.mode=="audio" || request.mode=="wifi") {

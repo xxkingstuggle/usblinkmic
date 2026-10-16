@@ -105,16 +105,17 @@ object Runtime {
       val authorized = request != null && java.security.MessageDigest.isEqual(command.optString("token").toByteArray(), request.token.toByteArray())
       val tombstone=cancelledSessions[command.optString("session")]
       val cancelledBeforeStart=request==null && tombstone!=null && java.security.MessageDigest.isEqual(command.optString("token").toByteArray(),tombstone.toByteArray())
-      val reply = if(cancelledBeforeStart) JSONObject().put("protocol",4).put("session",command.optString("session")).put("cancelled",true).put("accepted",false).put("error","") else if (!authorized) JSONObject().put("error", "AUTH_REQUIRED") else {
+      val reply = if(command.optInt("controlRevision",-1)!=Capabilities.CONTROL_REVISION) JSONObject().put("error","CONTROL_REVISION_MISMATCH") else if(cancelledBeforeStart) JSONObject().put("protocol",4).put("session",command.optString("session")).put("cancelled",true).put("accepted",false).put("cancelAccepted",true).put("producerStopped",true).put("error","") else if (!authorized) JSONObject().put("error", "AUTH_REQUIRED") else {
        request!!
-       if(command.optString("command")=="ncmState" && request.mode=="ncm" && request.accepted && !request.cancelled && command.optString("network")=="available") update { it.copy(phoneInternet=ModuleStatus(TaskPhase.RUNNING,"Mac已验证USB出口实际请求")) }
+       if(command.optString("command")=="ncmState" && request.mode=="ncm" && request.accepted && !request.cancelled) update { it.copy(phoneInternet=if(command.optString("network")=="connected") ModuleStatus(TaskPhase.RUNNING,"USB共享已连接") else ModuleStatus(TaskPhase.CONNECTING,"正在等待USB连接")) }
        if (command.optString("command") == "stop") { request.cancelled = true; stop(context, request) }
        val s = state.value
-       JSONObject().put("protocol", 4).put("session", request.session).put("cancelled", request.cancelled).put("error", request.error)
+       JSONObject().put("protocol", 4).put("session", request.session).put("cancelled", request.cancelled).put("cancelAccepted",request.cancelled).put("producerStopped",when(request.mode){"audio","wifi" -> audioRequest !== request || !MicrophoneService.recording;"vpn" -> vpnRequest !== request;else -> true}).put("error", request.error)
         .put("accepted",request.accepted).put("recording", audioRequest === request && MicrophoneService.recording)
         .put("microphonePermission", permission(s.microphonePermission)).put("notificationPermission", permission(s.notificationPermission)).put("vpnPermission", permission(s.vpnPermission))
-        .put("network", when(s.macInternet.phase) { TaskPhase.RUNNING -> "available"; TaskPhase.FAILED -> "noInternet"; else -> "preparing" })
+        .put("network", when(s.macInternet.phase) { TaskPhase.RUNNING -> "connected"; TaskPhase.FAILED -> "failed"; else -> "preparing" })
       }
+      reply.put("controlRevision",Capabilities.CONTROL_REVISION)
       socket.getOutputStream().write((reply.toString() + "\n").toByteArray())
      }
     } catch (e: Exception) { log("control", "requestFailed", e.message ?: e.javaClass.simpleName) }

@@ -107,7 +107,7 @@ private struct OwnedSession: Codable {
    for session in sessions {
     guard let module=Workspace(rawValue:session.module) else{continue}
     do {
-     try await cleanup(session);owned[module]=nil;try saveJournal()
+     let warnings=try await cleanup(session);owned[module]=nil;try saveJournal();if !warnings.isEmpty {log(module.rawValue,"recoveryWarning",warnings.joined(separator:"；"))}
      log(module.rawValue,"recovered","上次会话资源已清理；未重新开始任务")
     }catch {
      owned[module]=session
@@ -207,7 +207,7 @@ private struct OwnedSession: Codable {
   guard text.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil,
         let range=text.range(of:#"runtimeRevision=[0-9]+"#,options:.regularExpression),
         let revision=Int(text[range].split(separator:"=").last ?? "") else{return false}
-  return revision>=Capabilities.runtimeRevision && text.contains("controlComponent=\(Capabilities.androidControlComponent)")
+  return revision>=Capabilities.runtimeRevision && text.contains("controlComponent=\(Capabilities.androidControlComponent)") && text.range(of:#"controlRevision=1(?:[,}\s])"#,options:.regularExpression) != nil
  }
  private func launchPhone(_ module:Workspace,_ id:String,_ serial:String,_ settings:Settings,_ mode:String) async throws {
   let forward=try await adb.run(serial,["forward","tcp:0","tcp:\(settings.controlPort)"])
@@ -295,7 +295,6 @@ private struct OwnedSession: Codable {
  }
  private func startReverse(_ id:String,_ serial:String,_ settings:Settings) async throws {
   snapshot.networkState = .preparing
-  try await NetworkProbe.verify()
   guard valid(.macInternet,id) else{throw CancellationError()}
   let java=root.appendingPathComponent("runtime/bin/java");let jar=root.appendingPathComponent("relay.jar")
   guard FileManager.default.isExecutableFile(atPath:java.path),FileManager.default.fileExists(atPath:jar.path) else{throw LinkError.failure("RELAY_MISSING","发行包缺少内置转发运行时")}
@@ -309,8 +308,7 @@ private struct OwnedSession: Codable {
   while valid(.macInternet,id) {
    do {let s=try await poll(.macInternet,id);failures=0
     if s["cancelled"] as? Bool == true {throw LinkError.failure("VPN_DENIED","手机取消了VPN授权")}
-    if s["network"] as? String == "available" {snapshot.networkState = .available;status(.macInternet,.running,"手机请求已验证","手机DNS和HTTPS探测经VPN成功；IPv4 TCP/UDP，未承诺IPv6/ICMP");return}
-    if s["network"] as? String == "noInternet" {throw LinkError.failure("NO_UPSTREAM","VPN已准备但手机实际请求失败")}
+    if s["network"] as? String == "connected" {snapshot.networkState = .available;status(.macInternet,.running,"已连接","手机VPN接口与USB转发通道已就绪");return}
    } catch {failures+=1;if failures>=3 {throw error}}
    try await Task.sleep(nanoseconds:1_000_000_000)
   }
@@ -366,7 +364,7 @@ private struct OwnedSession: Codable {
   guard sharedUSB.allSatisfy({$0=="usb0"}) else{throw LinkError.failure("USB_SHARING_ALREADY_OWNED","存在无法关联本手机的以太网共享，未修改：\(sharedUSB)")}
   let borrowedSharing=sharedUSB.contains("usb0")
   owned[.phoneInternet]?.ncmBorrowed=borrowedSharing;try saveJournal()
-  if borrowedSharing {log("phoneInternet","existingSharingBorrowed","保留系统已开启的usb0共享；仅使用本手机USB出口，不重新申请或停止原共享；仍需实际HTTPS与默认出口验证")}
+  if borrowedSharing {log("phoneInternet","existingSharingBorrowed","保留系统已开启的usb0共享；仅使用本手机USB出口，不重新申请或停止原共享")}
   guard valid(.phoneInternet,id) else{throw CancellationError()}
   let alreadyNCM=NCMDriver.functions(functions).contains("ncm")
   if !alreadyNCM,owned[.microphone] != nil,snapshot.settings.transport == .usb {
@@ -388,7 +386,7 @@ private struct OwnedSession: Codable {
    ncmUSBChange=(id,task)
    do{try await task.value}catch{if ncmUSBChange?.id==id {ncmUSBChange=nil};throw error}
    if ncmUSBChange?.id==id {ncmUSBChange=nil}
-  }else{log("phoneInternet","usbFunctions",borrowedSharing ? "USB已处于NCM；保留原共享并继续真实出口验证":"USB已处于NCM且未共享；继续启动共享，不把NCM模式误当作已供网")}
+  }else{log("phoneInternet","usbFunctions",borrowedSharing ? "USB已处于NCM；保留原共享并继续确认USB连接":"USB已处于NCM且未共享；继续启动共享，不把NCM模式误当作已供网")}
   guard valid(.phoneInternet,id) else{throw CancellationError()}
   try await driver.waitForEthernet(serial)
   guard valid(.phoneInternet,id) else{throw CancellationError()}
@@ -414,7 +412,7 @@ private struct OwnedSession: Codable {
   try await driver.waitForTethering(serial:serial,session:id,active:true)
   guard valid(.phoneInternet,id) else{throw CancellationError()}
   let addressDeadline=ProcessInfo.processInfo.systemUptime+45
-  var lastDiscovery="",lastRoute="",lastDetectionError="",probeFailures=0
+  var lastDiscovery="",lastDetectionError=""
   status(.phoneInternet,.connecting,"等待USB网卡DHCP地址","usb0已实际共享；识别新建或复用的USB网卡，恢复被关闭的本手机网络服务")
   while valid(.phoneInternet,id) {
    do{try await services.detect()}catch{let text=error.localizedDescription;if text != lastDetectionError {log("phoneInternet","hardwareDetection",text);lastDetectionError=text}}
@@ -425,44 +423,40 @@ private struct OwnedSession: Codable {
    if discovery != lastDiscovery {log("phoneInternet","macDiscovery",discovery);lastDiscovery=discovery}
    if let service=selected {try await enableNCMService(service,id:id)}
    guard valid(.phoneInternet,id) else{throw CancellationError()}
-   guard let service=selected,let candidate=interfaces.first(where:{$0.name==service.device}) else{
+   guard let service=selected,let candidate=interfaces.first(where:{$0.name==service.device}),try await NetworkProbe.linkActive(service.device) else{
     if let service=selected,ProcessInfo.processInfo.systemUptime>addressDeadline {try await services.diagnostics(service)}
     if ProcessInfo.processInfo.systemUptime>addressDeadline {throw LinkError.failure(selected==nil ? "NCM_INTERFACE_NOT_FOUND":"NCM_DHCP_TIMEOUT",selected==nil ? "未能可靠关联本手机USB网络服务；日志已记录服务与接口候选":"手机usb0已共享，但Mac USB服务未取得DHCP地址；日志已记录服务与接口状态")}
     try await Task.sleep(nanoseconds:2_000_000_000);continue
    }
-   ncmInterface=candidate.name;snapshot.networkState = .verifying
-   if lastRoute.isEmpty,probeFailures==0 {try await services.diagnostics(service);status(.phoneInternet,.connecting,"验证手机出口","USB接口已取得地址；等待绑定该接口的HTTPS响应及默认出口确认")}
-   do {try await NetworkProbe.verifyPhoneInternet(interface:candidate.name,trace:{[weak self] text in self?.log("phoneInternet","httpsProbe",text)});probeFailures=0}
-   catch{probeFailures+=1;log("phoneInternet","httpsProbeFailed","attempt=\(probeFailures)/3, \(error.localizedDescription)");if probeFailures>=3 {snapshot.networkState = .noInternet;throw error};try await Task.sleep(nanoseconds:2_000_000_000);continue}
-   guard valid(.phoneInternet,id) else{throw CancellationError()}
-   let defaultInterface=try await NetworkProbe.defaultInterface()
-   if defaultInterface != candidate.name {
-    snapshot.networkState = .addressed
-    let route="USB=\(candidate.name), default=\(defaultInterface ?? "none")"
-    if route != lastRoute {status(.phoneInternet,.waitingUser,"USB出口可达，等待Mac选用","\(route)。请在Mac网络设置选择USB服务或调整服务顺序；未报告整机使用手机网络。停止可取消。");lastRoute=route}
-    try await Task.sleep(nanoseconds:2_000_000_000);continue
-   }
-   snapshot.networkState = .available
-   status(.phoneInternet,.running,"手机出口请求已验证","USB接口=\(candidate.name)，实际HTTPS成功且系统默认出口匹配；停止时恢复本次服务改动")
+   ncmInterface=candidate.name;snapshot.networkState = .available
+   try await services.diagnostics(service)
+   let defaultRoute=try await NetworkProbe.defaultInterface()
+   status(.phoneInternet,.running,"已连接","USB共享接口=\(candidate.name)，链路与地址已就绪；系统默认出口=\(defaultRoute ?? "none")")
    if let session=owned[.phoneInternet],let port=session.controlForward {
-    do{_ = try await ControlClient.request(port:port,body:["command":"ncmState","session":id,"token":session.token,"network":"available"])}
-    catch{log("phoneInternet","phoneStateDelivery","实际USB出口已验证，但手机状态回执失败：\(error.localizedDescription)")}
+    do{_ = try await ControlClient.request(port:port,body:["command":"ncmState","session":id,"token":session.token,"network":"connected"])}
+    catch{log("phoneInternet","phoneStateDelivery",error.localizedDescription)}
    }
    ncmMonitor=Task { [weak self] in
     guard let self=self else{return}
+    var linkWasReady=true
     while self.valid(.phoneInternet,id) {
      do {
-      try await Task.sleep(nanoseconds:5_000_000_000)
+      try await Task.sleep(nanoseconds:2_000_000_000)
       guard self.valid(.phoneInternet,id) else{return}
-      guard try await NetworkProbe.interfaces().contains(candidate) else{throw LinkError.failure("USB_NETWORK_LOST","USB共享接口或地址已离线")}
-      try await NetworkProbe.verifyPhoneInternet(interface:candidate.name,trace:{[weak self] text in self?.log("phoneInternet","httpsMonitor",text)})
-      guard try await NetworkProbe.defaultInterface()==candidate.name else{throw LinkError.failure("USB_DEFAULT_ROUTE_CHANGED","Mac系统默认出口已改变，停止报告手机供网可用")}
-     }catch{
+      let addressed=try await NetworkProbe.interfaces().contains(where:{$0.name==candidate.name})
+      let active=try await NetworkProbe.linkActive(candidate.name)
       guard self.valid(.phoneInternet,id) else{return}
-      self.log("phoneInternet","monitorFailed",error.localizedDescription)
-      await self.stop(.phoneInternet)
-      guard self.owned[.phoneInternet]==nil else{return}
-      self.snapshot.networkState = .noInternet;self.status(.phoneInternet,.failed,"USB出口验证未通过",error.localizedDescription);return
+      let ready=addressed && active
+      if ready != linkWasReady {
+       self.snapshot.networkState=ready ? .available:.preparing
+       self.status(.phoneInternet,ready ? .running:.connecting,ready ? "已连接":"USB连接暂时中断",ready ? "USB链路与地址已恢复":"任务与恢复记录保留；等待链路恢复，或点击停止")
+       linkWasReady=ready
+      }
+     } catch is CancellationError {return}
+     catch {
+      guard self.valid(.phoneInternet,id) else{return}
+      self.snapshot.networkState = .preparing
+      if linkWasReady {self.status(.phoneInternet,.connecting,"正在读取USB状态",error.localizedDescription);linkWasReady=false}
      }
     }
    }
@@ -483,7 +477,7 @@ private struct OwnedSession: Codable {
    do {
     let state=try await poll(.macInternet,s.id)
     if state["cancelled"] as? Bool == true {await stop(.macInternet);if owned[.macInternet]==nil {status(.macInternet,.stopped,"手机已停止VPN")};return}
-    if state["network"] as? String != "available" {throw LinkError.failure("NETWORK_LOST","手机请求验证失败")}
+    if state["network"] as? String != "connected" {throw LinkError.failure("NETWORK_LOST","手机VPN或USB转发通道已断开")}
    } catch {
     guard valid(.macInternet,s.id) else{return}
     await stop(.macInternet)
@@ -491,8 +485,13 @@ private struct OwnedSession: Codable {
    }
   }
  }
- private func cleanup(_ s:OwnedSession) async throws {
-  var failures=[String]()
+ private func cleanup(_ s:OwnedSession) async throws -> [String] {
+  var failures=[String](),warnings=[String]()
+  var cancellationAcknowledged=s.controlForward==nil
+  if s.controlForward != nil {
+   status(Workspace(rawValue:s.module) ?? .devices,.stopping,"取消手机任务","先停止本次任务，再恢复USB和网络服务")
+   do{try await cancelPhone(s);cancellationAcknowledged=true}catch{failures.append(error.localizedDescription)}
+  }
   if s.ncmBorrowed==true {log("phoneInternet","existingSharingPreserved","本次没有申请原usb0共享，停止不会关闭系统原共享")}
   if let change=ncmServiceChange,change.id==s.id {
    do{try await change.task.value}catch{log("phoneInternet","pendingServiceChange",error.localizedDescription)}
@@ -521,7 +520,7 @@ private struct OwnedSession: Codable {
   }
   if let functions=s.oldUSB {do{
    let driver=ncmDriver()
-   try await driver.waitForDevice(s.serial,respectCancellation:false)
+   try await driver.waitForDevice(s.serial,seconds:3,respectCancellation:false)
    var recoveryErrors=[String]()
    if s.ncmRequested==true {
     // The helper has a 30s process watchdog. Wait through its final receipt before
@@ -548,7 +547,10 @@ private struct OwnedSession: Codable {
     guard let current=usb.active else{throw LinkError.failure("USB_STATE_UNKNOWN","无法读取恢复前的实际USB功能，保留恢复记录")}
     let active=NCMDriver.functions(current),original=NCMDriver.functions(functions)
     guard active==original || (active.contains("ncm") && active.subtracting(["ncm","adb"]).isEmpty) else{throw LinkError.failure("USB_OWNERSHIP_CHANGED","用户或系统已改变USB功能，未覆盖后续更改")}
-    if active != original || s.ncmUSBChanged==true {try await driver.setFunctions(functions,serial:s.serial,respectCancellation:false)}
+    if active != original {
+     status(.phoneInternet,.stopping,"恢复USB模式","等待本次USB重枚举与实际功能确认")
+     try await driver.setFunctions(functions,serial:s.serial,respectCancellation:false,reconnectSeconds:5,confirmationSeconds:5)
+    } else {log("phoneInternet","usbAlreadyRestored","USB已是原值，未重复切换")}
    }catch{recoveryErrors.append(error.localizedDescription)}
    for path in recoveryErrors.isEmpty ? (s.ncmResults ?? []) : [] {
     do{try await driver.removeResult(path,serial:s.serial,session:s.id)}catch{recoveryErrors.append(error.localizedDescription)}
@@ -556,11 +558,15 @@ private struct OwnedSession: Codable {
    if !recoveryErrors.isEmpty {throw LinkError.failure("NCM_RECOVERY_INCOMPLETE",recoveryErrors.joined(separator:"；"))}
   }catch{failures.append(error.localizedDescription)}}
   if s.oldUSB != nil {
-   do{try await NetworkProbe.waitForDefaultInterface(s.originalInterface)}catch{failures.append(error.localizedDescription)}
+   do {
+    let route=try await NetworkProbe.defaultInterface()
+    if route != s.originalInterface {
+     let warning="系统默认出口与开始时不同：原=\(s.originalInterface ?? "none")，当前=\(route ?? "none")；请检查系统网络设置"
+     warnings.append(warning);log("phoneInternet","routeObservation",warning)
+    }
+   }catch {warnings.append("默认出口读取失败："+error.localizedDescription)}
   }
   if let port=s.controlForward {
-   var cancellationAcknowledged=false
-   do{try await cancelPhone(s);cancellationAcknowledged=true}catch{failures.append(error.localizedDescription)}
    // Retain the control channel and journal until an authenticated cancellation
    // is acknowledged. An exit-zero `am start` is not a business receipt.
    if cancellationAcknowledged {
@@ -584,6 +590,7 @@ private struct OwnedSession: Codable {
    }
   }catch{failures.append(error.localizedDescription)}}
   if !failures.isEmpty {throw LinkError.failure("CLEANUP_INCOMPLETE",failures.joined(separator:"；"))}
+  return warnings
  }
  private func cancelPhone(_ s:OwnedSession) async throws {
   guard let port=s.controlForward,let target=s.controlTarget,(1...65535).contains(port),(1...65535).contains(target) else{throw LinkError.failure("CONTROL_FORWARD","取消回执缺少有效控制端口")}
@@ -593,14 +600,21 @@ private struct OwnedSession: Codable {
    guard !mappings.split(separator:"\n").contains(where:{$0.split(whereSeparator:{$0.isWhitespace}).dropFirst().first==Substring(local)}) else{throw LinkError.failure("OWNERSHIP_CHANGED","取消控制端口已被其他会话使用，未覆盖")}
    _ = try await adb.run(s.serial,["forward","--no-rebind",local,"tcp:\(target)"],timeout:3)
   }
-  func acknowledged(_ response:[String:Any])->Bool {response["protocol"] as? Int==4 && response["session"] as? String==s.id && response["cancelled"] as? Bool==true}
-  do {if acknowledged(try await ControlClient.request(port:port,body:["command":"stop","session":s.id,"token":s.token])) {return}}
+  func acknowledged(_ response:[String:Any])->Bool {response["protocol"] as? Int==4 && response["session"] as? String==s.id && response["cancelAccepted"] as? Bool==true && response["producerStopped"] as? Bool==true}
+  var accepted=false
+  do {
+   let response=try await ControlClient.request(port:port,body:["command":"stop","session":s.id,"token":s.token])
+   accepted=response["session"] as? String==s.id && response["cancelAccepted"] as? Bool==true
+   if acknowledged(response) {log(s.module,"cancelAcknowledged","取消已接受，生产者已停止；继续恢复资源");return}
+  }
   catch {log(s.module,"cancelControlPending",error.localizedDescription)}
+  if !accepted {
   let capabilities=try await adb.run(s.serial,["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"],timeout:3)
   let component=Self.compatibleCompanion(capabilities) ? Capabilities.androidControlComponent:(s.controlComponent ?? Capabilities.legacyAndroidControlComponent)
   let launch=try await adb.run(s.serial,["shell","am","start","-f","0x18000000","-n",component,"--es","mode","cancel","--es","session",s.id,"--es","token",s.token,"--ei","controlPort",String(target)],timeout:4)
   log(s.module,"phoneCancelLaunch",launch)
   guard launch.range(of:#"Error:|Error type|SecurityException|Permission Denial|Exception occurred"#,options:[.regularExpression,.caseInsensitive])==nil else{throw LinkError.failure("CONTROL_CANCEL_REJECTED",launch)}
+  }
   let deadline=ProcessInfo.processInfo.systemUptime+8
   repeat {
    do {if acknowledged(try await ControlClient.request(port:port,body:["command":"status","session":s.id,"token":s.token])) {log(s.module,"cancelAcknowledged","手机已确认本次取消");return}}
@@ -622,7 +636,8 @@ private struct OwnedSession: Codable {
   await job.value
  }
  private func finishStop(_ module:Workspace,_ session:OwnedSession) async {
-  defer{stopping.remove(module);stopJobs[module]=nil}
+  let began=ProcessInfo.processInfo.systemUptime
+  defer{log(module.rawValue,"stopDuration","elapsed=\(String(format:"%.3f",ProcessInfo.processInfo.systemUptime-began))s, resourcesRemaining=\(owned[module] != nil)");stopping.remove(module);stopJobs[module]=nil}
   status(module,.stopping,"正在停止")
   if module == .microphone {receiver.stop();output.stop();snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected;audioWatchdog.stop(session.id);snapshot.receivedFrames=0;snapshot.effectiveAudio=nil}
   if module == .phoneInternet {
@@ -632,10 +647,10 @@ private struct OwnedSession: Codable {
   if module == .macInternet {relay?.terminationHandler=nil;if relay?.isRunning==true {relay?.terminate()};relay=nil;snapshot.networkState = .stopped}
   do {
    try saveJournal()
-   try await cleanup(session)
+   let warnings=try await cleanup(session)
    owned[module]=nil
    try saveJournal()
-   status(module,.stopped,"已停止")
+   status(module,.stopped,"已停止",warnings.joined(separator:"；"))
   } catch {
    owned[module]=session
    do{try saveJournal()}catch{log("recovery","journalSaveFailed",error.localizedDescription)}
