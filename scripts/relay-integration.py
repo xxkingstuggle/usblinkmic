@@ -3,8 +3,8 @@
 import os, socket, struct, subprocess, threading, time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-JAVA=Path(os.environ['JAVA_HOME'])/'bin/java'
-JAR=ROOT/'artifacts/relay.jar'
+JAVA=Path(os.environ.get('LINKMIC_JAVA',str(Path(os.environ['JAVA_HOME'])/'bin/java')))
+JAR=Path(os.environ.get('LINKMIC_JAR',str(ROOT/'artifacts/relay.jar')))
 
 def checksum(data):
     if len(data)%2:data+=b'\0'
@@ -41,7 +41,7 @@ def main():
             data,addr=echo.recvfrom(4096);echo.sendto(data,addr)
     worker=threading.Thread(target=serve);worker.start()
     relay_port=48138
-    with (ROOT/'docs/evidence/relay-runtime.log').open('w') as log:
+    with (ROOT/'docs/evidence'/os.environ.get('LINKMIC_RELAY_LOG','relay-runtime.log')).open('w') as log:
         p,s=start(relay_port,log)
         try:
             s.sendall(packet(port,b'linkmic-roundtrip-1'))

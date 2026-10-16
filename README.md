@@ -11,7 +11,7 @@ Use Xcode27/Swift6.4, JDK17, Android SDK36/BuildTools35.0.0. Set `JAVA_HOME` to 
 ```sh
 ./scripts/validate.sh
 ./scripts/fetch-tools.sh
-./scripts/package.sh 4.0.0-review.1
+./scripts/package.sh 4.0.0-local.1
 ```
 
 Gradle wrapper8.13 is pinned by SHA256. Build/test caches are project-local. `scripts/package.sh` refuses to overwrite a release directory and uses a local persistent Android signing key excluded from Git. Ordinary runtime users do not need a development environment; APK/ADB/relay/Java are bundled.
