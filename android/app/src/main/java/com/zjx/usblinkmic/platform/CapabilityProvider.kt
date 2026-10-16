@@ -15,6 +15,7 @@ class CapabilityProvider:ContentProvider() {
   require(method=="capabilities"){"UNKNOWN_READ_METHOD"}
   return Bundle().apply {
    putInt("protocol",Capabilities.PROTOCOL_VERSION)
+   putInt("runtimeRevision",Capabilities.RUNTIME_REVISION)
    putString("version",Capabilities.VERSION)
    putString("sampleRates",Capabilities.SAMPLE_RATES.joinToString(","))
    putString("formats","i16,f32");putString("sources","microphone,unprocessed,voiceRecognition")

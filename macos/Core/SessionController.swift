@@ -7,7 +7,7 @@ import Contracts
 import Support
 
 private struct OwnedSession: Codable {
- var id:String; var serial:String; var token:String; var controlForward:Int?; var controlTarget:Int?; var reverse:String?; var relayPID:Int32?; var relayExecutable:String?; var oldUSB:String?; var originalInterface:String?; var module:String
+ var id:String; var serial:String; var token:String; var controlForward:Int?; var controlTarget:Int?; var reverse:String?; var relayPID:Int32?; var relayExecutable:String?; var ncmRequested:Bool?; var ncmPendingStart:String?; var ncmResults:[String]?; var oldUSB:String?; var originalInterface:String?; var module:String
 }
 @MainActor public final class SessionController: ObservableObject, AppControlling {
  @Published public private(set) var snapshot=AppSnapshot()
@@ -128,7 +128,18 @@ private struct OwnedSession: Codable {
    if module == .microphone {try await startAudio(id,serial,settings)}
    else if module == .phoneInternet {await stop(.macInternet);guard owned[.macInternet]==nil else{throw LinkError.failure("DIRECTION_CLEANUP_PENDING","反向供网资源未恢复；先重试停止")};try await startNCM(id,serial,settings)}
    else {await stop(.phoneInternet);guard owned[.phoneInternet]==nil else{throw LinkError.failure("DIRECTION_CLEANUP_PENDING","手机供网资源未恢复；先重试停止")};try await startReverse(id,serial,settings)}
-  }catch {guard owned[module]?.id==id else{return};let message=error.localizedDescription;let failedNetwork=snapshot.networkState;await stop(module);if module != .microphone{snapshot.networkState=failedNetwork};status(module,.failed,"操作失败",message,"TASK_FAILED")}
+  }catch {
+   guard owned[module]?.id==id,!Task.isCancelled else{return}
+   let message=error.localizedDescription
+   let code:String
+   if case LinkError.failure(let value,_) = error {code=value}else{code="TASK_FAILED"}
+   await stop(module)
+   if module == .microphone {snapshot.audioState = .failed}
+   else if ["ROM_UNSUPPORTED","NCM_NOT_TRACKED"].contains(code) {snapshot.networkState = .unsupported}
+   else if code=="NO_UPSTREAM" {snapshot.networkState = .noInternet}
+   else{snapshot.networkState = .failed}
+   status(module,.failed,"操作失败",message,code)
+  }
  }
  private func prepareCompanion(_ module:Workspace,_ id:String,_ serial:String) async throws {
   let exists=try await adb.run(serial,["shell","pm","list","packages","com.zjx.usblinkmic"])
@@ -137,7 +148,7 @@ private struct OwnedSession: Codable {
   var compatible=false
   if installed {
    let capability=try await adb.run(serial,["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"])
-   compatible=capability.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil
+   compatible=Self.compatibleCompanion(capability)
   }
   if !compatible {
    let apk=root.appendingPathComponent("companion.apk");let checksum=root.appendingPathComponent("companion.sha256")
@@ -152,8 +163,14 @@ private struct OwnedSession: Codable {
    guard installed.contains("package:com.zjx.usblinkmic") else{throw LinkError.failure("INSTALL_NOT_CONFIRMED","未能复查配套App安装")}
   }
   let capability=try await adb.run(serial,["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"])
-  guard capability.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil else{throw LinkError.failure("APP_INCOMPATIBLE","配套App未报告兼容协议4；未强行降级或卸载数据")}
+  guard Self.compatibleCompanion(capability) else{throw LinkError.failure("APP_INCOMPATIBLE","配套App未报告所需协议与运行时能力；未强行降级或卸载数据")}
 
+ }
+ private static func compatibleCompanion(_ text:String) -> Bool {
+  guard text.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil,
+        let range=text.range(of:#"runtimeRevision=[0-9]+"#,options:.regularExpression),
+        let revision=Int(text[range].split(separator:"=").last ?? "") else{return false}
+  return revision>=Capabilities.runtimeRevision
  }
  private func launchPhone(_ module:Workspace,_ id:String,_ serial:String,_ settings:Settings,_ mode:String) async throws {
   let forward=try await adb.run(serial,["forward","tcp:0","tcp:\(settings.controlPort)"])
@@ -164,11 +181,24 @@ private struct OwnedSession: Codable {
   let args=["shell","am","start","-n","com.zjx.usblinkmic/.MainActivity","--es","mode",mode,"--es","session",id,"--es","token",settings.pairingCode,"--ei","rate",String(audio.sampleRate),"--ei","channels",String(audio.channels),"--es","format",audio.format.rawValue,"--es","source",audio.source.rawValue,"--ei","port",String(settings.audioPort),"--ei","controlPort",String(settings.controlPort),"--es","dns",settings.dns,"--es","routes",settings.routes]
   _ = try await adb.run(serial,args)
   status(module,.waitingUser,"等待手机确认","在手机确认本次会话与系统权限；停止可取消")
+  // am start completes before onNewIntent registers the new request. Wait for the
+  // authenticated session, without treating the previous control server as a protocol mismatch.
+  let deadline=ProcessInfo.processInfo.systemUptime+8
+  while valid(module,id) {
+   do{_ = try await poll(module,id);return}
+   catch {
+    guard ProcessInfo.processInfo.systemUptime<deadline else{throw error}
+    if case LinkError.failure(let code,_) = error,code != "CONTROL_SESSION_PENDING" {throw error}
+   }
+   try await Task.sleep(nanoseconds:300_000_000)
+  }
+  throw CancellationError()
  }
  private func poll(_ module:Workspace,_ id:String) async throws -> [String:Any] {
   guard let session=owned[module],session.id==id,let port=session.controlForward else{throw CancellationError()}
   let response=try await ControlClient.request(port:port,body:["command":"status","session":id,"token":session.token])
   guard valid(module,id) else{throw CancellationError()}
+  if response["error"] as? String=="AUTH_REQUIRED" {throw LinkError.failure("CONTROL_SESSION_PENDING","手机尚未登记本次会话，请等待应用处理启动请求")}
   guard response["protocol"] as? Int == 4,response["session"] as? String == id else{throw LinkError.failure("PROTOCOL_MISMATCH","手机会话身份或协议不一致")}
   if let p=response["microphonePermission"] as? String{snapshot.microphonePermission=PermissionState(rawValue:p) ?? .notRequested}
   if let p=response["notificationPermission"] as? String{snapshot.notificationPermission=PermissionState(rawValue:p) ?? .notRequested}
@@ -242,27 +272,67 @@ private struct OwnedSession: Codable {
   let functions=try await adb.run(serial,["shell","getprop","sys.usb.config"])
   guard functions.split(separator:",").allSatisfy({$0.allSatisfy{$0.isLetter || $0.isNumber || $0=="_"}}),!functions.isEmpty else{throw LinkError.failure("USB_STATE_UNKNOWN","无法安全保存原USB功能")}
   guard !functions.split(separator:",").contains("ncm") else{throw LinkError.failure("USB_SHARING_ALREADY_OWNED","NCM已由系统或其他任务开启，未接管或关闭现有共享；请先停止现有共享后再试")}
-  let before=try await NetworkProbe.interfaces()
+  let sdk=try await adb.run(serial,["shell","getprop","ro.build.version.sdk"],timeout:3)
+  guard (Int(sdk) ?? 0)>=30 else{throw LinkError.failure("ROM_UNSUPPORTED","此ADB网络共享路径需要Android11及以上；麦克风仍可独立使用")}
+  let existing=try await adb.run(serial,["shell","dumpsys","tethering"],timeout:4)
+  guard existing.range(of:#"(?m)^\s*(?:eth|usb)[0-9]+[^\n]*TetheredState"#,options:.regularExpression)==nil else{throw LinkError.failure("USB_SHARING_ALREADY_OWNED","系统已有以太网共享，未接管现有连接")}
+  let before=try await NetworkProbe.interfaceNames()
   owned[.phoneInternet]?.originalInterface=try await NetworkProbe.defaultInterface()
   try await launchPhone(.phoneInternet,id,serial,settings,"ncm")
   while valid(.phoneInternet,id) {
    let state=try await poll(.phoneInternet,id)
    if state["cancelled"] as? Bool == true {throw LinkError.failure("USER_CANCELLED","手机取消网络共享")}
    if state["accepted"] as? Bool == true {break}
-   try await Task.sleep(nanoseconds:1_000_000_000)
+   try await Task.sleep(nanoseconds:500_000_000)
   }
   guard valid(.phoneInternet,id) else{throw CancellationError()}
+  // USB re-enumeration interrupts live USB audio. Release its owned session first;
+  // the user may start audio again after the NCM interface is ready.
+  if owned[.microphone] != nil,snapshot.settings.transport == .usb {
+   await stop(.microphone)
+   guard owned[.microphone]==nil else{throw LinkError.failure("AUDIO_CLEANUP_PENDING","USB重枚举前请先完成音频停止")}
+   log("audio","usbReenumeration","USB共享切换需要重新识别；网络准备后可重新开始手机麦克风")
+  }
   owned[.phoneInternet]?.oldUSB=functions;try saveJournal()
-  do{let reply = try await adb.run(serial,["shell","svc","usb","setFunctions","ncm,adb"]);if reply.range(of:"error|exception|unsupported|permission denied|invalid",options:[.regularExpression,.caseInsensitive]) != nil {throw LinkError.failure("ROM_UNSUPPORTED",reply)}}catch{snapshot.networkState = .unsupported;throw LinkError.failure("ROM_UNSUPPORTED","系统拒绝CDC-NCM功能切换：\(error.localizedDescription)")}
-  status(.phoneInternet,.waitingUser,"等待手机共享与USB重新识别","在手机系统网络共享页确认USB有线共享；不把USB功能存在视为互联网可用。停止可取消。")
+  let driver=NCMDriver(adb:adb)
+  status(.phoneInternet,.preparing,"切换USB到NCM","USB会短暂断开；等待同一手机重新连接，不按ADB退出码判断ROM能力")
+  try await driver.setFunctions("ncm",serial:serial)
+  guard valid(.phoneInternet,id) else{throw CancellationError()}
+  try await driver.waitForEthernet(serial)
+  guard valid(.phoneInternet,id) else{throw CancellationError()}
+  // Reverse/forward mappings may vanish when adbd restarts. Only replace our receipt.
+  guard let port=owned[.phoneInternet]?.controlForward else{throw LinkError.failure("CONTROL_FORWARD","缺少本次控制通道回执")}
+  let mappings=try await adb.run(nil,["forward","--list"],timeout:3)
+  if !ADB.ownsMapping(mappings,serial:serial,local:"tcp:\(port)",remote:"tcp:\(settings.controlPort)") {
+   guard !mappings.split(separator:"\n").contains(where:{$0.split(whereSeparator:{$0.isWhitespace}).dropFirst().first==Substring("tcp:\(port)")}) else{throw LinkError.failure("OWNERSHIP_CHANGED","原控制端口已被其他会话使用，未覆盖")}
+   _ = try await adb.run(serial,["forward","--no-rebind","tcp:\(port)","tcp:\(settings.controlPort)"])
+  }
+  guard valid(.phoneInternet,id) else{throw CancellationError()}
+  let startPath="/data/local/tmp/usblinkmic-\(id)-start.json"
+  let stopPath="/data/local/tmp/usblinkmic-\(id)-stop.json"
+  owned[.phoneInternet]?.ncmRequested=true;owned[.phoneInternet]?.ncmPendingStart=startPath;owned[.phoneInternet]?.ncmResults=[startPath,stopPath];try saveJournal()
+  status(.phoneInternet,.preparing,"启动手机以太网共享","通过已授权的ADB shell执行TetheringManager；等待真实回调")
+  try await driver.launch("start",serial:serial,session:id,resultPath:startPath)
+  let receipt=try await driver.result(at:startPath,serial:serial,session:id)
+  guard valid(.phoneInternet,id) else{throw CancellationError()}
+  owned[.phoneInternet]?.ncmPendingStart=nil;try saveJournal()
+  try NCMDriver.requireSuccess(receipt,action:"start")
+  try await driver.removeResult(startPath,serial:serial,session:id)
+  let detection=try await ProcessRunner.run(URL(fileURLWithPath:"/usr/sbin/networksetup"),["-detectnewhardware"],timeout:5)
+  if detection.code != 0 {log("phoneInternet","hardwareDetection",detection.output)}
+  let addressDeadline=ProcessInfo.processInfo.systemUptime+45
+  var foundAddress=false
+  status(.phoneInternet,.connecting,"等待USB网卡DHCP地址","共享已收到启动回调；尚未把进程或IP当成互联网可用")
   while valid(.phoneInternet,id) {
    try await Task.sleep(nanoseconds:2_000_000_000)
    let interfaces=try await NetworkProbe.interfaces()
-   let candidates=interfaces.filter{!before.contains($0)}
+   let candidates=interfaces.filter{!before.contains($0.name)}
    if candidates.count>1 {throw LinkError.failure("NCM_INTERFACE_AMBIGUOUS","出现多个新地址接口，未选择或修改任何Mac路由")}
    guard let candidate=candidates.first else{
+    if !foundAddress,ProcessInfo.processInfo.systemUptime>addressDeadline {throw LinkError.failure("NCM_DHCP_TIMEOUT","手机共享已启动，但Mac未取得唯一USB接口地址")}
     continue
    }
+   foundAddress=true
    ncmInterface=candidate.name;snapshot.networkState = .verifying
    status(.phoneInternet,.connecting,"验证手机出口","通过新接口的实际HTTPS请求，interface=\(candidate.name)")
    do{try await NetworkProbe.verify(interface:candidate.name)}catch{snapshot.networkState = .noInternet;throw error}
@@ -274,7 +344,8 @@ private struct OwnedSession: Codable {
    snapshot.networkState = .available
    status(.phoneInternet,.running,"手机出口请求已验证","绑定USB接口请求已成功；Mac系统默认路由保持系统管理，未修改其他网络服务")
    if let session=owned[.phoneInternet],let port=session.controlForward {
-    _ = try await ControlClient.request(port:port,body:["command":"ncmState","session":id,"token":session.token,"network":"available"])
+    do{_ = try await ControlClient.request(port:port,body:["command":"ncmState","session":id,"token":session.token,"network":"available"])}
+    catch{log("phoneInternet","phoneStateDelivery","实际USB出口已验证，但手机状态回执失败：\(error.localizedDescription)")}
    }
    ncmMonitor=Task { [weak self] in
     guard let self=self else{return}
@@ -321,6 +392,42 @@ private struct OwnedSession: Codable {
     }
    }catch{failures.append(error.localizedDescription)}
   }
+  if let functions=s.oldUSB {do{
+   let driver=NCMDriver(adb:adb)
+   try await driver.waitForDevice(s.serial,respectCancellation:false)
+   let current=try await adb.run(s.serial,["shell","getprop","sys.usb.config"],timeout:3)
+   let active=NCMDriver.functions(current),original=NCMDriver.functions(functions)
+   guard active==original || (active.contains("ncm") && active.subtracting(["ncm","adb"]).isEmpty) else{throw LinkError.failure("USB_OWNERSHIP_CHANGED","用户或系统已改变USB功能，未覆盖后续更改")}
+   var recoveryErrors=[String]()
+   if s.ncmRequested==true {
+    // The helper has a 30s process watchdog. Wait through its final receipt before
+    // submitting stop; cancellation cannot leave a late start racing restoration.
+    if let pending=s.ncmPendingStart {
+     do{_ = try await driver.result(at:pending,serial:s.serial,session:s.id,respectCancellation:false)}
+     catch{
+      let processes=try await adb.run(s.serial,["shell","ps","-A","-o","ARGS"],timeout:4)
+      guard !processes.split(separator:"\n").contains(where:{$0.contains("com.zjx.usblinkmic.platform.NcmShellCommand") && $0.contains(s.id)}) else{throw LinkError.failure("NCM_START_PENDING","手机共享启动进程仍未结束，保留恢复记录")}
+      log("phoneInternet","startReceiptMissing","启动进程已结束但回执不可读，仍执行停止与USB恢复")
+     }
+    }
+    do {
+     let path="/data/local/tmp/usblinkmic-\(s.id)-stop.json"
+     try await driver.launch("stop",serial:s.serial,session:s.id,resultPath:path)
+     let receipt=try await driver.result(at:path,serial:s.serial,session:s.id,respectCancellation:false)
+     try NCMDriver.requireSuccess(receipt,action:"stop")
+    }catch{recoveryErrors.append(error.localizedDescription)}
+   }
+   if active != original {
+    do{try await driver.setFunctions(functions,serial:s.serial,respectCancellation:false)}catch{recoveryErrors.append(error.localizedDescription)}
+   }
+   for path in s.ncmResults ?? [] {
+    do{try await driver.removeResult(path,serial:s.serial,session:s.id)}catch{recoveryErrors.append(error.localizedDescription)}
+   }
+   if !recoveryErrors.isEmpty {throw LinkError.failure("NCM_RECOVERY_INCOMPLETE",recoveryErrors.joined(separator:"；"))}
+  }catch{failures.append(error.localizedDescription)}}
+  if s.oldUSB != nil {
+   do{try await NetworkProbe.waitForDefaultInterface(s.originalInterface)}catch{failures.append(error.localizedDescription)}
+  }
   if let port=s.controlForward {
    do{let response=try await ControlClient.request(port:port,body:["command":"stop","session":s.id,"token":s.token]);guard response["session"] as? String==s.id,response["cancelled"] as? Bool==true else{throw LinkError.failure("STOP_NOT_ACKNOWLEDGED","手机未确认取消")}}catch{
     do{_ = try await adb.run(s.serial,["shell","am","start","-n","com.zjx.usblinkmic/.MainActivity","--es","mode","cancel","--es","session",s.id,"--es","token",s.token],timeout:3)}catch{failures.append(error.localizedDescription)}
@@ -343,15 +450,6 @@ private struct OwnedSession: Codable {
     _ = try await adb.run(s.serial,["reverse","--remove",reverse],timeout:3)
    }
   }catch{failures.append(error.localizedDescription)}}
-  if let functions=s.oldUSB {do{
-   let current=try await adb.run(s.serial,["shell","getprop","sys.usb.config"],timeout:3)
-   if Set(current.split(separator:","))==Set(["ncm","adb"]) || current=="ncm" {
-    _ = try await adb.run(s.serial,["shell","svc","usb","setFunctions",functions],timeout:3)
-   }else if current != functions {throw LinkError.failure("USB_OWNERSHIP_CHANGED","用户或系统已改变USB功能，未覆盖后续更改")}
-  }catch{failures.append(error.localizedDescription)}}
-  if s.oldUSB != nil,let original=s.originalInterface {
-   do{let restored=try await NetworkProbe.defaultInterface();guard restored==original else{throw LinkError.failure("ROUTE_NOT_RESTORED","原出口尚未恢复；未擅自改写系统路由")};try await NetworkProbe.verify(interface:original)}catch{failures.append(error.localizedDescription)}
-  }
   if !failures.isEmpty {throw LinkError.failure("CLEANUP_INCOMPLETE",failures.joined(separator:"；"))}
  }
  public func stop(_ module:Workspace) async {

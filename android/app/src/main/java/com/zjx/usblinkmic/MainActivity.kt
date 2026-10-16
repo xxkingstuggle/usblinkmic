@@ -72,7 +72,11 @@ class MainActivity : ComponentActivity() {
    .setOnCancelListener{request.cancelled=true;Runtime.fail(request,"USER_CANCELLED")}.show()
  }
  private fun authorize(request: Request) {
-  if(request.mode=="ncm"){Runtime.update{it.copy(phoneInternet=ModuleStatus(TaskPhase.WAITING_USER,"请在系统共享页启用USB网络共享","Mac验证出口后才显示可用"))};try{startActivity(Intent("android.settings.TETHER_SETTINGS"))}catch(e:Exception){Runtime.fail(request,"TETHER_SETTINGS_UNAVAILABLE: ${e.message}")};return}
+  if(request.mode=="ncm") {
+   pending=null
+   Runtime.update{it.copy(phoneInternet=ModuleStatus(TaskPhase.PREPARING,"Mac正在配置本次USB共享","等待USB重枚举与系统共享回调；Mac实际请求验证后才显示可用"))}
+   return
+  }
   if(request.mode=="audio" || request.mode=="wifi") {
    if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){Runtime.update{it.copy(microphonePermission=PermissionState.WAITING)};microphonePermission.launch(Manifest.permission.RECORD_AUDIO)}
    else {Runtime.update{it.copy(microphonePermission=PermissionState.ALLOWED)};notificationThenStart(request)}

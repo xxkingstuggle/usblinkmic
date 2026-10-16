@@ -16,10 +16,10 @@
 |T10|USB 音频，讲话与静音各一段|碎片与全零有效PCM单测通过；不作为真实音频证据。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T11|首包超时、坏帧、端口占用、录音硬件失败|坏帧失败→新解码器恢复单测通过；端口/硬件/首包反向路径待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T12|Wi-Fi 地址保存、失联、第二连接|地址/配对码/单发送端已实现；真实LAN断连及第二台连接待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
-|T13|本机试听与外部软件输入|AVAudioEngine/BlackHole输出与指引已实现；试听/外部录音待用户实测。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T13|本机试听与外部软件输入|HAL拉取式PCM/BlackHole输出与指引已实现；试听/外部录音待用户实测。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T14|输出设备拔出、重插、重名、系统默认变化|稳定UID与拔出停止已实现；热插拔/重名/系统默认变化待实机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T15|首次 VPN 授权，延迟确认和拒绝|确认+VPN系统授权+取消清理已实现；延迟/拒绝待手机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
-|T16|手机供网成功、ROM 不支持、无上游网|NCM切换、系统共享页与绑定接口HTTPS探测已实现；默认路由选择及ROM能力未证明。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+|T16|手机供网成功、ROM 不支持、无上游网|NCM重枚举、ADB共享助手与绑定接口HTTPS探测已实现；默认路由选择及ROM能力未证明。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T17|Mac 反向供网，DNS/上游断开|真实Java relay本地UDP往返、退出/无应答负例通过；手机VPN/DNS/HTTPS仍待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T18|插拔 USB、USB 重枚举、设备切换、重复启停|UUID取消检查/指定serial/方向互斥已实现；设备重枚举与组合恢复待真机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T19|导出含设备、地址和目录的诊断|Swift/Android结构化脱敏单测通过；真实诊断导出需用户审阅。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
@@ -28,3 +28,5 @@
 |T22|停止全部、正常退出、异常退出后重开|进程非零/超时单测通过，资源journal与退出上限已实现；真实崩溃与恢复待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T23|音频+手机供网；音频+反向供网；供网方向切换|方向切换必须等清理成功；音频+双方向组合/重枚举仍待真机。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
 |T24|安装最终发行包的普通用户环境|配套包/运行时/工具构建打包待审阅；Developer ID/公证缺失与普通用户安装待验。 统一入口 `./scripts/validate.sh`，日志 `docs/evidence/validation-shipping.log`。|待批准后实机验收；尚未pass|
+
+4.0.3补充：用户要求测试/验证自行执行；本轮仅编译打包，以上历史下层测试记录不代表4.0.3已重跑。T01—T24及所有阈值保持，未新增pass。详细修复依据见runtime-repair-4.0.3.md。

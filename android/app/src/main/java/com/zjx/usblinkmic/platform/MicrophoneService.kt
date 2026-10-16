@@ -18,23 +18,25 @@ import kotlin.math.sqrt
 class MicrophoneService : Service() {
  companion object {
   @Volatile var recording=false
+  @Volatile private var owner:Request?=null
   @Volatile private var recorder: AudioRecord?=null
   @Volatile private var socket: Socket?=null
-  fun stopCapture(){recording=false;try{recorder?.stop()}catch(_:IllegalStateException){};try{socket?.close()}catch(_:Exception){}}
+  fun stopCapture(request:Request?=null){if(request!=null && owner!==request)return;recording=false;try{recorder?.stop()}catch(_:IllegalStateException){};try{socket?.close()}catch(_:Exception){}}
  }
  private var request: Request?=null
  override fun onBind(intent: Intent?): IBinder?=null
  override fun onStartCommand(intent: Intent?,flags:Int,startId:Int):Int {
-  if(intent?.action=="STOP"){Runtime.audioRequest?.let{it.cancelled=true};stopCapture();stopSelf();return START_NOT_STICKY}
+  if(intent?.action=="STOP"){Runtime.audioRequest?.let{it.cancelled=true};stopCapture(Runtime.audioRequest);stopSelf(startId);return START_NOT_STICKY}
   val r=Runtime.audioRequest
   if(r==null || r.cancelled || !r.accepted || intent?.getStringExtra("session")!=r.session){stopSelf();return START_NOT_STICKY}
-  request=r
+  if(owner===r && recording)return START_NOT_STICKY
+  request=r;owner=r
   if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){Runtime.fail(r,"MICROPHONE_DENIED");stopSelf();return START_NOT_STICKY}
   startForeground(10,Notifications.create(this,"USB LinkMic正在采音",Intent(this,MicrophoneService::class.java).setAction("STOP")))
-  thread(name="linkmic-capture") {capture(r)}
+  thread(name="linkmic-capture") {capture(r,startId)}
   return START_NOT_STICKY
  }
- private fun capture(r:Request) {
+ private fun capture(r:Request,startId:Int) {
   var ownedRecorder:AudioRecord?=null;var ownedSocket:Socket?=null
   try {
    val p=r.settings.audio
@@ -68,8 +70,8 @@ class MicrophoneService : Service() {
     val level=sqrt(energy/n)
     Runtime.update{it.copy(level=level,waveform=trend,frames=it.frames+1)}
    }
-  }catch(e:Exception){if(!r.cancelled)Runtime.fail(r,e.message ?: e.javaClass.simpleName)}
-  finally{try{ownedRecorder?.stop()}catch(_:Exception){};ownedRecorder?.release();try{ownedSocket?.close()}catch(_:Exception){};if(Runtime.audioRequest===r){recording=false;recorder=null;socket=null};stopSelf()}
+  }catch(e:Exception){if(!r.cancelled && Runtime.audioRequest===r)Runtime.fail(r,e.message ?: e.javaClass.simpleName)}
+  finally{try{ownedRecorder?.stop()}catch(_:Exception){};ownedRecorder?.release();try{ownedSocket?.close()}catch(_:Exception){};if(owner===r){recording=false;recorder=null;socket=null;owner=null};stopSelf(startId)}
  }
- override fun onDestroy(){request?.cancelled=true;stopCapture();if(Runtime.audioRequest===request)Runtime.audioRequest=null;Runtime.update{if(it.microphone.phase==TaskPhase.FAILED)it.copy(level=0.0,waveform=emptyList()) else it.copy(microphone=ModuleStatus(),level=0.0,waveform=emptyList())};super.onDestroy()}
+ override fun onDestroy(){request?.cancelled=true;stopCapture(request);if(Runtime.audioRequest===request)Runtime.audioRequest=null;Runtime.update{if(Runtime.audioRequest!=null)it else if(it.microphone.phase==TaskPhase.FAILED)it.copy(level=0.0,waveform=emptyList()) else it.copy(microphone=ModuleStatus(),level=0.0,waveform=emptyList())};super.onDestroy()}
 }
