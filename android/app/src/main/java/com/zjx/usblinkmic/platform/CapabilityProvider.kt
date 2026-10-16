@@ -17,6 +17,7 @@ class CapabilityProvider:ContentProvider() {
    putInt("protocol",Capabilities.PROTOCOL_VERSION)
    putInt("runtimeRevision",Capabilities.RUNTIME_REVISION)
    putString("version",Capabilities.VERSION)
+   putString("controlComponent",Capabilities.CONTROL_COMPONENT)
    putString("sampleRates",Capabilities.SAMPLE_RATES.joinToString(","))
    putString("formats","i16,f32");putString("sources","microphone,unprocessed,voiceRecognition")
    putString("network","IPv4 TCP UDP; NCM ROM capability required")

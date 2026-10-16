@@ -23,10 +23,12 @@ import Foundation
  }
  func usbState(_ serial:String) async throws -> USBState {
   var values=[String?]()
-  for args in [["svc","usb","getFunctions"],["getprop","sys.usb.state"],["getprop","sys.usb.config"]] {
+  for (index,args) in [["svc","usb","getFunctions"],["getprop","sys.usb.state"],["getprop","sys.usb.config"]].enumerated() {
    let r=try await ProcessRunner.run(adb.executable,["-s",serial,"shell"]+args,timeout:3,cancellable:false)
    let value=r.output.trimmingCharacters(in:.whitespacesAndNewlines)
-   values.append(r.code==0 && Self.validFunctions(value) ? value:nil)
+   // Only successful framework getFunctions has the empty FUNCTION_NONE meaning.
+   // Empty properties and failed commands remain unavailable.
+   values.append(r.code==0 && index==0 && value.isEmpty ? "none":(r.code==0 && Self.validFunctions(value) ? value:nil))
    if r.code != 0 || (!value.isEmpty && !Self.validFunctions(value)) {trace("usbStateRead","\(args.joined(separator:" ")) exit=\(r.code): \(r.output.prefix(800))")}
   }
   return USBState(framework:values[0],state:values[1],config:values[2])

@@ -12,6 +12,8 @@ import com.zjx.usblinkmic.support.*
 import org.json.JSONObject
 import java.net.ServerSocket
 import java.net.InetAddress
+import java.util.UUID
+import android.os.SystemClock
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
@@ -22,6 +24,20 @@ object Runtime {
  val cancelledSessions = ConcurrentHashMap<String, String>()
  @Volatile var audioRequest: Request? = null
  @Volatile var vpnRequest: Request? = null
+ private data class ControlLaunch(val intent: Intent, val created: Long)
+ private val controlLaunches = LinkedHashMap<String, ControlLaunch>()
+ @Synchronized fun stageAdbCommand(intent: Intent): String {
+  val now=SystemClock.elapsedRealtime()
+  controlLaunches.entries.removeAll { now-it.value.created>15000 }
+  while(controlLaunches.size>=16) controlLaunches.remove(controlLaunches.keys.first())
+  val ticket=UUID.randomUUID().toString()
+  controlLaunches[ticket]=ControlLaunch(Intent(intent),now)
+  return ticket
+ }
+ @Synchronized fun consumeAdbCommand(ticket: String): Intent? {
+  val launch=controlLaunches.remove(ticket) ?: return null
+  return launch.intent.takeIf { SystemClock.elapsedRealtime()-launch.created<=15000 }
+ }
  private var server: ServerSocket? = null
  private val main = android.os.Handler(android.os.Looper.getMainLooper())
  fun update(block: (AppSnapshot) -> AppSnapshot) { main.post { state.value = block(state.value) } }

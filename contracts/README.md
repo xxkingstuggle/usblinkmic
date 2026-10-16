@@ -46,3 +46,8 @@ Crash recovery records relay PID plus executable path and unique JVM session pro
 - 私有OwnedSession journal增加可选ncmServices[{name,device,wasEnabled}]及ncmUSBChanged；修改精确USB服务前持久化，失败保留归属重试，恢复期间阻止启动新任务。不能修改其他服务或全局路由。
 - 日志启动读入历史，导出磁盘有界历史，显式清除同时清盘。NCM阶段事件覆盖USB、共享、Mac服务/DHCP、HTTPS及恢复，统一LogRedactor脱敏。详见docs/ncm-repair-4.0.4.md。
 - shutdown异步返回资源是否恢复；App退出等待该结果，取消5秒提前退出。失败保留UI/归属日志供重试，退出期间禁止新任务。
+
+## 4.0.5 Mac直接启动与准确服务选择
+- 依据用户新决定，移除应用内每次会话确认；accepted表示已接受受保护入口的Mac命令，不表示系统录音/VPN权限已经授予。recording、真实共享及HTTPS/默认出口仍分别确认，权限等待不计首包超时。通知许可不是启动门槛。
+- 新控制入口com.zjx.usblinkmic/.AdbControlActivity由DUMP权限保护，MainActivity只消费同进程一次性ticket。能力报告controlComponent，Mac要求runtimeRevision405并校验该组件；两端成套升级，协议4/schema1未改。journal新增可选controlComponent供精确取消，旧记录保留旧入口。
+- getFunctions成功空串为none，getprop空串或失败仍未知。服务发现基线包含持久服务，明确安卓优先，离线iPhone不作为新USB候选。歧义与业务验证门槛不变。

@@ -10,6 +10,8 @@ struct NCMNetworkService: Equatable {
  }
  var usbNamed:Bool {
   let value=(name+" "+hardware).lowercased()
+  guard !["iphone","ipad","ipod"].contains(where:{hardware.lowercased().contains($0)}) else{return false}
+  guard !["wi-fi","wifi","bluetooth","thunderbolt"].contains(where:{hardware.lowercased().contains($0)}) else{return false}
   return phoneNamed || (value.contains("usb") && !["wi-fi","wifi","bluetooth","thunderbolt"].contains{value.contains($0)})
  }
 }
@@ -96,14 +98,14 @@ struct NCMServiceReceipt: Codable {
   let direct=services.filter{associated.contains($0.device)}
   if direct.count==1 {return direct[0]}
   if direct.count>1 {throw LinkError.failure("NCM_INTERFACE_AMBIGUOUS","同一手机关联多个Mac网络服务，未修改")}
-  // A new USB service observed during this single-phone transition is attributable.
+  // Reused interfaces need positive phone identification, not a generic LAN name.
+  let reused=services.filter{$0.phoneNamed && $0.usbNamed}
+  if reused.count==1 {return reused[0]}
+  if reused.count>1 {throw LinkError.failure("NCM_INTERFACE_AMBIGUOUS","存在多个手机网络服务，未修改")}
+  // Include persistent services in the baseline, even if their BSD device is absent.
   let created=services.filter{!baseline.contains($0.device) && $0.usbNamed}
   if created.count==1 {return created[0]}
   if created.count>1 {throw LinkError.failure("NCM_INTERFACE_AMBIGUOUS","出现多个新USB网络服务，未修改")}
-  // Reused interfaces need positive phone identification, not a generic LAN name.
-  let reused=services.filter{$0.phoneNamed}
-  if reused.count==1 {return reused[0]}
-  if reused.count>1 {throw LinkError.failure("NCM_INTERFACE_AMBIGUOUS","存在多个手机网络服务，未修改")}
   return nil
  }
 }

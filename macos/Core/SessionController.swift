@@ -7,7 +7,7 @@ import Contracts
 import Support
 
 private struct OwnedSession: Codable {
- var id:String; var serial:String; var token:String; var controlForward:Int?; var controlTarget:Int?; var reverse:String?; var relayPID:Int32?; var relayExecutable:String?; var ncmServices:[NCMServiceReceipt]?; var ncmUSBChanged:Bool?; var ncmRequested:Bool?; var ncmPendingStart:String?; var ncmResults:[String]?; var oldUSB:String?; var originalInterface:String?; var module:String
+ var id:String; var serial:String; var token:String; var controlForward:Int?; var controlTarget:Int?; var controlComponent:String?; var reverse:String?; var relayPID:Int32?; var relayExecutable:String?; var ncmServices:[NCMServiceReceipt]?; var ncmUSBChanged:Bool?; var ncmRequested:Bool?; var ncmPendingStart:String?; var ncmResults:[String]?; var oldUSB:String?; var originalInterface:String?; var module:String
 }
 @MainActor public final class SessionController: ObservableObject, AppControlling {
  @Published public private(set) var snapshot=AppSnapshot()
@@ -205,17 +205,17 @@ private struct OwnedSession: Codable {
   guard text.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil,
         let range=text.range(of:#"runtimeRevision=[0-9]+"#,options:.regularExpression),
         let revision=Int(text[range].split(separator:"=").last ?? "") else{return false}
-  return revision>=Capabilities.runtimeRevision
+  return revision>=Capabilities.runtimeRevision && text.contains("controlComponent=\(Capabilities.androidControlComponent)")
  }
  private func launchPhone(_ module:Workspace,_ id:String,_ serial:String,_ settings:Settings,_ mode:String) async throws {
   let forward=try await adb.run(serial,["forward","tcp:0","tcp:\(settings.controlPort)"])
   guard let port=Int(forward) else{throw LinkError.failure("CONTROL_FORWARD","无法建立本会话控制通道")}
   guard valid(module,id) else{_ = try await adb.run(serial,["forward","--remove","tcp:\(port)"],timeout:3);throw CancellationError()}
-  owned[module]?.controlForward=port;owned[module]?.controlTarget=settings.controlPort;try saveJournal()
+  owned[module]?.controlForward=port;owned[module]?.controlTarget=settings.controlPort;owned[module]?.controlComponent=Capabilities.androidControlComponent;try saveJournal()
   let audio=settings.audio
-  let args=["shell","am","start","-n","com.zjx.usblinkmic/.MainActivity","--es","mode",mode,"--es","session",id,"--es","token",settings.pairingCode,"--ei","rate",String(audio.sampleRate),"--ei","channels",String(audio.channels),"--es","format",audio.format.rawValue,"--es","source",audio.source.rawValue,"--ei","port",String(settings.audioPort),"--ei","controlPort",String(settings.controlPort),"--es","dns",settings.dns,"--es","routes",settings.routes]
+  let args=["shell","am","start","-n",Capabilities.androidControlComponent,"--es","mode",mode,"--es","session",id,"--es","token",settings.pairingCode,"--ei","rate",String(audio.sampleRate),"--ei","channels",String(audio.channels),"--es","format",audio.format.rawValue,"--es","source",audio.source.rawValue,"--ei","port",String(settings.audioPort),"--ei","controlPort",String(settings.controlPort),"--es","dns",settings.dns,"--es","routes",settings.routes]
   _ = try await adb.run(serial,args)
-  status(module,.waitingUser,"等待手机确认","在手机确认本次会话与系统权限；停止可取消")
+  status(module,.connecting,"正在启动手机会话","已从Mac发起；仅缺少系统录音或VPN权限时需要手机处理")
   // am start completes before onNewIntent registers the new request. Wait for the
   // authenticated session, without treating the previous control server as a protocol mismatch.
   let deadline=ProcessInfo.processInfo.systemUptime+8
@@ -223,7 +223,8 @@ private struct OwnedSession: Codable {
    do{_ = try await poll(module,id);return}
    catch {
     guard ProcessInfo.processInfo.systemUptime<deadline else{throw error}
-    if case LinkError.failure(let code,_) = error,code != "CONTROL_SESSION_PENDING" {throw error}
+    guard case LinkError.failure(let code,_) = error,["CONTROL_SESSION_PENDING","CONTROL_CONNECT","CONTROL_SEND","CONTROL_TIMEOUT"].contains(code) else{throw error}
+    log(module.rawValue,"controlRegistrationPending","等待本次会话登记：\(code)")
    }
    try await Task.sleep(nanoseconds:300_000_000)
   }
@@ -238,6 +239,12 @@ private struct OwnedSession: Codable {
   if let p=response["microphonePermission"] as? String{snapshot.microphonePermission=PermissionState(rawValue:p) ?? .notRequested}
   if let p=response["notificationPermission"] as? String{snapshot.notificationPermission=PermissionState(rawValue:p) ?? .notRequested}
   if let p=response["vpnPermission"] as? String{snapshot.vpnPermission=PermissionState(rawValue:p) ?? .notRequested}
+  let waiting=(module == .microphone && response["microphonePermission"] as? String=="waiting") || (module == .macInternet && response["vpnPermission"] as? String=="waiting")
+  let current=module == .microphone ? snapshot.microphone:(module == .macInternet ? snapshot.macInternet:snapshot.phoneInternet)
+  if ![TaskPhase.running,.stopping,.failed].contains(current.phase) {
+   if waiting,current.stage != "等待Android系统权限" {status(module,.waitingUser,"等待Android系统权限","系统录音或VPN权限尚未授予；无需应用内重复确认")}
+   else if !waiting,current.stage == "等待Android系统权限" {status(module,.connecting,"系统权限已处理，继续启动")}
+  }
   if let error=response["error"] as? String,!error.isEmpty{throw LinkError.failure("PHONE_ERROR",error)}
   return response
  }
@@ -337,6 +344,7 @@ private struct OwnedSession: Codable {
   guard (Int(sdk) ?? 0)>=30 else{throw LinkError.failure("ROM_UNSUPPORTED","此ADB网络共享路径需要Android11及以上；麦克风仍可独立使用")}
   let before=try await NetworkProbe.interfaceNames()
   let baselineServices=try await services.list()
+  let knownDevices=before.union(baselineServices.map{ $0.device })
   log("phoneInternet","macBaseline","interfaces=\(before.sorted()); services=\(baselineServices.map{"\($0.name):\($0.device) [\($0.hardware)]"})")
   owned[.phoneInternet]?.originalInterface=try await NetworkProbe.defaultInterface()
   try await launchPhone(.phoneInternet,id,serial,settings,"ncm")
@@ -359,7 +367,7 @@ private struct OwnedSession: Codable {
   guard valid(.phoneInternet,id) else{throw CancellationError()}
   owned[.phoneInternet]?.oldUSB=functions;try saveJournal()
   let associatedBefore=try await services.phoneInterfaces(serial:serial)
-  if let service=try services.select(from:baselineServices,baseline:before,associated:associatedBefore) {
+  if let service=try services.select(from:baselineServices,baseline:knownDevices,associated:associatedBefore) {
    try await enableNCMService(service,id:id)
   }
   guard valid(.phoneInternet,id) else{throw CancellationError()}
@@ -400,7 +408,7 @@ private struct OwnedSession: Codable {
    do{try await services.detect()}catch{let text=error.localizedDescription;if text != lastDetectionError {log("phoneInternet","hardwareDetection",text);lastDetectionError=text}}
    let mapping=try await services.list(),interfaces=try await NetworkProbe.interfaces()
    let associated=try await services.phoneInterfaces(serial:serial)
-   let selected=try services.select(from:mapping,baseline:before,associated:associated)
+   let selected=try services.select(from:mapping,baseline:knownDevices,associated:associated)
    let discovery="phoneInterfaces=\(associated.sorted()), services=\(mapping.map{"\($0.name):\($0.device) [\($0.hardware)]"}), IPv4=\(interfaces.map{"\($0.name)=\($0.address)"}), selected=\(selected?.device ?? "none")"
    if discovery != lastDiscovery {log("phoneInternet","macDiscovery",discovery);lastDiscovery=discovery}
    if let service=selected {try await enableNCMService(service,id:id)}
@@ -531,7 +539,7 @@ private struct OwnedSession: Codable {
   }
   if let port=s.controlForward {
    do{let response=try await ControlClient.request(port:port,body:["command":"stop","session":s.id,"token":s.token]);guard response["session"] as? String==s.id,response["cancelled"] as? Bool==true else{throw LinkError.failure("STOP_NOT_ACKNOWLEDGED","手机未确认取消")}}catch{
-    do{_ = try await adb.run(s.serial,["shell","am","start","-n","com.zjx.usblinkmic/.MainActivity","--es","mode","cancel","--es","session",s.id,"--es","token",s.token],timeout:3)}catch{failures.append(error.localizedDescription)}
+    do{_ = try await adb.run(s.serial,["shell","am","start","-n",s.controlComponent ?? Capabilities.legacyAndroidControlComponent,"--es","mode","cancel","--es","session",s.id,"--es","token",s.token],timeout:3)}catch{failures.append(error.localizedDescription)}
    }
    do{
     let mappings=try await adb.run(nil,["forward","--list"],timeout:3)
