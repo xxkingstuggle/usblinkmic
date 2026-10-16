@@ -1,11 +1,11 @@
 # 当前图标约定 — 2026-10-17
 
-用户指定的新图为assets/branding/app-icon-source.png，Mac和Android统一使用。此决定覆盖2026-10-16沿用旧图标的决定。原图完整保存，SHA256与21个派生尺寸见icon-provenance.json；历史旧图标来源记录保留于icon-provenance-legacy-4.0.2.json，不代表当前资源。
+用户指定assets/branding/app-icon-source.png作为两端图案。Android继续用原图派生各密度、圆形和自适应图标，自适应保留12dp安全边距。旧图标来源仅保留于icon-provenance-legacy-4.0.2.json，不代表当前资源。
 
-运行python3 scripts/prepare-icons.py从原图经系统sips生成Mac16—1024像素与Android各密度PNG，不重绘、不裁切。Android自适应图标白底/12dp安全边距，普通及圆形launcher均引用新图。Mac使用系统iconutil生成标准ICNS，由CFBundleIconFile引用；由系统按标准ICNS显示，禁止将原始ICNS直接覆盖applicationIconImage；侧栏使用NSWorkspace系统图标并限制24点。
+Mac当前策略为4.0.8-review.4：经imagegen处理外侧透明背景，生成资产mac-app-icon.png；用scripts/prepare-mac-icon.swift去掉边缘碎屑、裁剪底板，输出mac-app-icon-prepared.png。1024像素RGBA画布内820像素圆角底板，四边102像素透明。原蓝色图案保留，未改Android。由prepare-icons.py和系统sips派生10个Mac尺寸，系统iconutil生成ICNS。
 
-版本4.0.8/40008/runtime408仅图标、打包与版本更新，protocol4/controlRevision1及音频/供网逻辑保持4.0.7。更新runtime是为了让已安装旧配套的手机在下一次启动功能前更新新图标。不得擅自重置Dock/Finder全局缓存或删除应用数据。
+包内同时包含AppIcon.icns和DockIcon.png。启动完成及SwiftUI窗口onAppear明确加载PNG，逻辑尺寸固定128点，设置applicationIconImage并刷新DockTile；专用branding日志记录实际应用。侧栏24点，使用系统图标。禁止再直接加载不透明满画布原图，也不能仅删除加载代码后假定系统一定显示成功。
 
-4.0.8-review.2：Mac显示修正，撤销运行时原始ICNS覆盖，保留系统外形和留白；侧栏32→24点。原图、两端图标资源、Android APK及协议/业务逻辑不变，版本仍4.0.8，按review.2与sourceCommit区分包。
+review.2删除加载后用户截图出现占位图；review.3仅有构建/安装记录，未找到加载日志。review.4已取得运行进程branding日志，说明已加载固定尺寸透明图标。Dock工具画面仍不可读，不冒充目视验收。版本仍4.0.8/40008，以review.4与sourceCommit区分，音频/供网不变。
 
-4.0.8-review.3覆盖review.2的Mac显示策略：用户截图证实Dock为占位图。Mac图像经透明底处理与几何圆角遮罩，1024画布内820像素底板/102像素透明留白；DockIcon.png明确加载并设128点逻辑尺寸，再刷新DockTile。标准ICNS同时保留。Android不变；版本仍4.0.8，以review.3/源码commit区分。原始生成透明边缘有碎屑，已用固定圆角边界去掉，不直接交付该草稿。
+来源、派生路径及SHA见icon-provenance.json。重新制作：先运行`swift scripts/prepare-mac-icon.swift assets/branding/mac-app-icon.png assets/branding/mac-app-icon-prepared.png`，再运行`python3 scripts/prepare-icons.py`。不清全局Dock/Finder缓存、不改用户Dock大小或应用数据。
