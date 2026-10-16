@@ -4,10 +4,16 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.net.TetheringManager;
+import android.net.Network;
 import android.os.Build;
 import android.os.Looper;
 import android.os.Process;
 import org.json.JSONObject;
+import org.json.JSONArray;
+import java.util.List;
+import java.util.Set;
+import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.lang.reflect.Method;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -42,9 +48,9 @@ public final class NcmShellCommand {
         deadline.setDaemon(true); deadline.start();
         try {
             if (Process.myUid() != 2000) throw new SecurityException("ADB_SHELL_REQUIRED");
-            if (args.length != 2 || !(args[0].equals("start") || args[0].equals("stop"))
+            if (args.length != 2 || !(args[0].equals("start") || args[0].equals("stop") || args[0].equals("status"))
                     || !args[1].matches("[A-Fa-f0-9-]{36}")) throw new IllegalArgumentException("INVALID_COMMAND");
-            result.put("action", args[0]).put("session", args[1]);
+            result.put("action", args[0]).put("session", args[1]).put("sdk", Build.VERSION.SDK_INT);
             if (Build.VERSION.SDK_INT < 30) throw new UnsupportedOperationException("NCM_SHELL_REQUIRES_API30");
             if (Looper.myLooper() == null) Looper.prepareMainLooper();
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
@@ -63,35 +69,73 @@ public final class NcmShellCommand {
                 context.setAccessible(true);
                 context.set(manager, shell);
             } catch (NoSuchFieldException ignored) { /* Service already obtained from shell context. */ }
-            TetheringManager.TetheringRequest.Builder builder = new TetheringManager.TetheringRequest.Builder(ETHERNET);
-            Method entitlement = builder.getClass().getDeclaredMethod("setShouldShowEntitlementUi", boolean.class);
-            entitlement.setAccessible(true);
-            entitlement.invoke(builder, false);
-            TetheringManager.TetheringRequest request = builder.build();
-            Executor executor = Runnable::run;
-            CountDownLatch completed = new CountDownLatch(1);
-            AtomicInteger code = new AtomicInteger(-1);
-            boolean legacyStop = false;
-            if (args[0].equals("start")) {
-                manager.startTethering(request, executor, new TetheringManager.StartTetheringCallback() {
-                    @Override public void onTetheringStarted() { code.set(0); completed.countDown(); }
-                    @Override public void onTetheringFailed(int error) { code.set(error); completed.countDown(); }
-                });
-            } else if (Build.VERSION.SDK_INT >= 36) {
-                manager.stopTethering(request, executor, new TetheringManager.StopTetheringCallback() {
-                    @Override public void onStopTetheringSucceeded() { code.set(0); completed.countDown(); }
-                    @Override public void onStopTetheringFailed(int error) { code.set(error); completed.countDown(); }
-                });
+            if (args[0].equals("status")) {
+                // Registering delivers the real interface list immediately. Both callback
+                // signatures are needed: Android 11–13 use List, newer modules use Set.
+                CountDownLatch changed = new CountDownLatch(1);
+                AtomicReference<List<String>> tethered = new AtomicReference<>();
+                AtomicReference<Throwable> readError = new AtomicReference<>();
+                AtomicReference<Boolean> upstream = new AtomicReference<>();
+                TetheringManager.TetheringEventCallback callback = new TetheringManager.TetheringEventCallback() {
+                    // Hidden in the public SDK; an optional diagnostic callback on the platform.
+                    public void onUpstreamChanged(Network network) { upstream.set(network != null); }
+                    public void onTetheredInterfacesChanged(List<String> interfaces) {
+                        tethered.set(new ArrayList<>(interfaces)); changed.countDown();
+                    }
+                    @Override @SuppressWarnings("rawtypes")
+                    public void onTetheredInterfacesChanged(Set interfaces) {
+                        try {
+                            List<String> names = new ArrayList<>();
+                            for (Object iface : interfaces) {
+                                names.add((String) iface.getClass().getMethod("getInterface").invoke(iface));
+                            }
+                            tethered.set(names);
+                        } catch (Throwable failure) { readError.set(failure); }
+                        changed.countDown();
+                    }
+                };
+                boolean registered = false;
+                try {
+                    manager.registerTetheringEventCallback(Runnable::run, callback);
+                    registered = true;
+                    if (!changed.await(8, TimeUnit.SECONDS)) throw new IllegalStateException("TETHERING_STATUS_TIMEOUT");
+                    if (readError.get() != null) throw new IllegalStateException("TETHERING_STATUS_DECODE", readError.get());
+                    result.put("tethered", new JSONArray(tethered.get()));
+                    result.put("upstreamPresent", upstream.get() == null ? JSONObject.NULL : upstream.get());
+                    result.put("callback", "interfaces").put("errorCode", 0);
+                    ok = true;
+                } finally { if (registered) manager.unregisterTetheringEventCallback(callback); }
             } else {
-                // Pre-36 platform implementation has the hidden stop-by-type entry point.
-                manager.getClass().getMethod("stopTethering", int.class).invoke(manager, ETHERNET);
-                legacyStop = true;
-                code.set(0); completed.countDown();
+                TetheringManager.TetheringRequest.Builder builder = new TetheringManager.TetheringRequest.Builder(ETHERNET);
+                Method entitlement = builder.getClass().getDeclaredMethod("setShouldShowEntitlementUi", boolean.class);
+                entitlement.setAccessible(true);
+                entitlement.invoke(builder, false);
+                TetheringManager.TetheringRequest request = builder.build();
+                Executor executor = Runnable::run;
+                CountDownLatch completed = new CountDownLatch(1);
+                AtomicInteger code = new AtomicInteger(-1);
+                boolean legacyStop = false;
+                if (args[0].equals("start")) {
+                    manager.startTethering(request, executor, new TetheringManager.StartTetheringCallback() {
+                        @Override public void onTetheringStarted() { code.set(0); completed.countDown(); }
+                        @Override public void onTetheringFailed(int error) { code.set(error); completed.countDown(); }
+                    });
+                } else if (Build.VERSION.SDK_INT >= 36) {
+                    manager.stopTethering(request, executor, new TetheringManager.StopTetheringCallback() {
+                        @Override public void onStopTetheringSucceeded() { code.set(0); completed.countDown(); }
+                        @Override public void onStopTetheringFailed(int error) { code.set(error); completed.countDown(); }
+                    });
+                } else {
+                    // Pre-36 platform implementation has the hidden stop-by-type entry point.
+                    manager.getClass().getMethod("stopTethering", int.class).invoke(manager, ETHERNET);
+                    legacyStop = true;
+                    code.set(0); completed.countDown();
+                }
+                if (!completed.await(25, TimeUnit.SECONDS)) throw new IllegalStateException("TETHERING_CALLBACK_TIMEOUT");
+                result.put("errorCode", code.get());
+                ok = code.get() == 0;
+                result.put("callback", ok ? (args[0].equals("start") ? "started" : (legacyStop ? "stopSubmitted" : "stopped")) : "failed");
             }
-            if (!completed.await(25, TimeUnit.SECONDS)) throw new IllegalStateException("TETHERING_CALLBACK_TIMEOUT");
-            result.put("errorCode", code.get());
-            ok = code.get() == 0;
-            result.put("callback", ok ? (args[0].equals("start") ? "started" : (legacyStop ? "stopSubmitted" : "stopped")) : "failed");
         } catch (Throwable failure) {
             Throwable cause = failure;
             while (cause.getCause() != null && cause.getCause() != cause) cause = cause.getCause();

@@ -17,6 +17,7 @@ public enum LogRedactor {
             result = replacingMatches(in: result, pattern: pattern, template: "$1[REDACTED]")
         }
         result = replacingMatches(in: result, pattern: homePathPattern, template: "[HOME]")
+        result = replacingMatches(in: result, pattern: #"(?i)(?<![a-f0-9:])(?:[a-f0-9]{2}:){5}[a-f0-9]{2}(?![a-f0-9:])"#, template: "[MAC]")
         result = replacingIPv4Addresses(in: result)
         result = replacingIPv6Addresses(in: result)
         return result

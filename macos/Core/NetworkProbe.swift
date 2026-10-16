@@ -27,6 +27,25 @@ public enum NetworkProbe {
   let result=try await ProcessRunner.run(URL(fileURLWithPath:"/usr/bin/curl"),args,timeout:13)
   guard result.code==0,result.output=="204" else{throw LinkError.failure("NO_UPSTREAM","实际HTTPS请求失败（\(result.code)）：\(result.output)")}
  }
+ // NCM must not depend on a single Google endpoint being reachable. Both probes
+ // require TLS validation, a USB-bound IPv4 socket and the expected response.
+ @MainActor static func verifyPhoneInternet(interface:String,trace:(String)->Void) async throws {
+  let targets=[("https://captive.apple.com/hotspot-detect.html","Apple"),("https://connectivitycheck.gstatic.com/generate_204","Google")]
+  var failures=[String]()
+  for (url,label) in targets {
+   let args=["--silent","--show-error","--ipv4","--interface",interface,"--noproxy","*","--proto","=https","--connect-timeout","5","--max-time","12","--max-filesize","4096","--write-out","\nLINKMIC_HTTP:%{http_code}",url]
+   let result=try await ProcessRunner.run(URL(fileURLWithPath:"/usr/bin/curl"),args,timeout:13)
+   let pieces=result.output.components(separatedBy:"\nLINKMIC_HTTP:")
+   let body=pieces.first ?? "",code=pieces.count==2 ? pieces[1].trimmingCharacters(in:.whitespacesAndNewlines):"missing"
+   let expected=label=="Google" ? code=="204" && body.isEmpty:code=="200" && body.range(of:#"(?i)<body>\s*Success\s*</body>"#,options:.regularExpression) != nil
+   trace("target=\(label), interface=\(interface), curlExit=\(result.code), HTTP=\(code), expectedBody=\(expected)")
+   if result.code==0,expected {return}
+   // Do not log an unexpected HTML page; it can contain portal/user information.
+   let error=result.code==0 ? "unexpected HTTP/body":String(body.prefix(600))
+   failures.append("\(label): curl=\(result.code), HTTP=\(code), \(error)")
+  }
+  throw LinkError.failure("NO_UPSTREAM","USB地址已取得，但实际HTTPS出口请求未通过："+failures.joined(separator:"；"))
+ }
  public static func waitForDefaultInterface(_ expected:String?,seconds:TimeInterval=15) async throws {
   let deadline=ProcessInfo.processInfo.systemUptime+seconds
   repeat {

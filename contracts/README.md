@@ -39,3 +39,9 @@ Crash recovery records relay PID plus executable path and unique JVM session pro
 - 本次共享切换会先停止既有USB音频，避免其在USB重枚举中误报断流；共享完成后用户可重新开始音频。不会自动重启采音。
 - 供网仍需要新USB接口的实际HTTPS成功和默认出口检查；Tethering回调/IP/进程存在都不单独记网络成功。退出恢复对照原默认出口，不把原上游本来无互联网误当恢复失败。
 - 按用户最新指示，本轮编译打包，测试/功能验证由用户执行。
+
+## 4.0.4 NCM与日志修订
+- 两端runtimeRevision>=404，协议4/schema1及音频参数保持。NcmShellCommand新增只读status结果：action/session/ok/errorCode/callback/tethered（接口名数组）/upstreamPresent（可选布尔或null）/sdk；List/Set回调均可接受。上游标记只作诊断，不代替HTTPS。
+- USB状态来源为svc usb getFunctions→sys.usb.state；sys.usb.config仅诊断。NCM启动另有usb0实际跟踪与tethered确认，停止确认退出共享；取消/恢复不把ADB退出码当作USB结果。
+- 私有OwnedSession journal增加可选ncmServices[{name,device,wasEnabled}]及ncmUSBChanged；修改精确USB服务前持久化，失败保留归属重试，恢复期间阻止启动新任务。不能修改其他服务或全局路由。
+- 日志启动读入历史，导出磁盘有界历史，显式清除同时清盘。NCM阶段事件覆盖USB、共享、Mac服务/DHCP、HTTPS及恢复，统一LogRedactor脱敏。详见docs/ncm-repair-4.0.4.md。
