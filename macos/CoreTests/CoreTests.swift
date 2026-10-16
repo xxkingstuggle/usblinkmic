@@ -9,6 +9,13 @@ final class CoreTests:XCTestCase {
   XCTAssertFalse(ADB.ownsMapping(listing,serial:"phoneB",local:"tcp:12345",remote:"tcp:48125"))
   XCTAssertFalse(ADB.ownsMapping(listing,serial:"phoneA",local:"tcp:12345",remote:"tcp:9999"))
  }
+ @MainActor func testReadOnlyCoreAudioOutputDiscovery(){
+  let devices=AudioOutput.devices()
+  XCTAssertFalse(devices.isEmpty,"This Mac must expose an output for local monitor acceptance")
+  XCTAssertEqual(Set(devices.map{$0.id}).count,devices.count)
+  XCTAssertTrue(devices.allSatisfy{!$0.id.isEmpty && !$0.name.isEmpty})
+  print("PASS CoreAudio read-only discovery: \(devices.count) outputs; no capture or output started")
+ }
  func testDeviceParsingKeepsUnauthorizedAndOfflineSeparate(){
   let values=ADB.devices("List of devices attached\na unauthorized\nb device product:x\nc offline\n")
   XCTAssertEqual(values.map{$0.0},["a","b","c"]);XCTAssertEqual(values.map{$0.1},["unauthorized","device","offline"])

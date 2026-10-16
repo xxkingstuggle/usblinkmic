@@ -27,8 +27,8 @@ import Contracts
  }
  private static func string(_ id: AudioDeviceID,_ selector: AudioObjectPropertySelector) -> String? {
   var a=AudioObjectPropertyAddress(mSelector:selector,mScope:kAudioObjectPropertyScopeGlobal,mElement:kAudioObjectPropertyElementMain)
-  var value: CFString="" as CFString; var size=UInt32(MemoryLayout<CFString>.size)
-  guard AudioObjectGetPropertyData(id,&a,0,nil,&size,&value)==noErr else { return nil }; return value as String
+  var value: Unmanaged<CFString>?=nil; var size=UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+  guard AudioObjectGetPropertyData(id,&a,0,nil,&size,&value)==noErr else { return nil }; return value?.takeRetainedValue() as String?
  }
  private static func deviceID(_ uid: String) -> AudioDeviceID? {
   var a=AudioObjectPropertyAddress(mSelector:kAudioHardwarePropertyDevices,mScope:kAudioObjectPropertyScopeGlobal,mElement:kAudioObjectPropertyElementMain); var n:UInt32=0

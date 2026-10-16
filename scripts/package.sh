@@ -26,7 +26,7 @@ fi
 mkdir -p "$release"
 tools=$HOME/Library/Android/sdk/build-tools/35.0.0
 "$tools/zipalign" -P 16 -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk "artifacts/aligned-$version.apk"
-"$tools/apksigner" sign --ks .tools/signing/companion.jks --ks-key-alias companion --ks-pass file:.tools/signing/password --key-pass file:.tools/signing/password --out "$release/USBLinkMic-$version.apk" "artifacts/aligned-$version.apk"
+"$tools/apksigner" sign --ks .tools/signing/companion.jks --ks-key-alias companion --ks-pass file:.tools/signing/password --out "$release/USBLinkMic-$version.apk" "artifacts/aligned-$version.apk"
 "$tools/apksigner" verify --verbose --print-certs "$release/USBLinkMic-$version.apk" > "$release/apk-signature.txt"
 app="$release/USB LinkMic.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/platform-tools" "$app/Contents/Resources/licenses"
