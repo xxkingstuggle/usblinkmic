@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-version="${1:-4.0.1-review.1}"
+version="${1:-4.0.2-review.1}"
 [[ "$version" =~ ^[0-9A-Za-z.-]+$ ]]
 release="$HOME/Developer/releases/usblinkmic/$version"
 if [[ -e "$release" ]]; then echo 'Refusing to overwrite an existing release directory' >&2; exit 1; fi
@@ -40,11 +40,12 @@ cp third_party/gnirehtet/LICENSE "$app/Contents/Resources/licenses/Gnirehtet-LIC
 cp artifacts/relay.jar "$app/Contents/Resources/relay.jar"
 ditto artifacts/runtime-build/runtime "$app/Contents/Resources/runtime"
 cp docs/dependencies.md "$app/Contents/Resources/licenses/dependencies.md"
+iconutil -c icns macos/Resources/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
 python3 - "$app" <<'PY'
 from pathlib import Path
 import sys,plistlib
 app=Path(sys.argv[1])
-p={'CFBundleExecutable':'USBLinkMic','CFBundleIdentifier':'com.zjx.usblinkmic.mac','CFBundleName':'USB LinkMic','CFBundleDisplayName':'USB LinkMic','CFBundlePackageType':'APPL','CFBundleShortVersionString':'4.0.1','CFBundleVersion':'40001','LSMinimumSystemVersion':'26.0','NSHighResolutionCapable':True,'NSLocalNetworkUsageDescription':'通过你选择的本地地址接收Android手机的Wi-Fi音频。'}
+p={'CFBundleExecutable':'USBLinkMic','CFBundleIdentifier':'com.zjx.usblinkmic.mac','CFBundleName':'USB LinkMic','CFBundleDisplayName':'USB LinkMic','CFBundlePackageType':'APPL','CFBundleShortVersionString':'4.0.2','CFBundleVersion':'40002','LSMinimumSystemVersion':'26.0','CFBundleIconFile':'AppIcon.icns','NSHighResolutionCapable':True,'NSLocalNetworkUsageDescription':'通过你选择的本地地址接收Android手机的Wi-Fi音频。'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(p))
 PY
 codesign --force --sign - "$app/Contents/Resources/platform-tools/adb"

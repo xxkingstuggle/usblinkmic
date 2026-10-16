@@ -22,7 +22,7 @@ public enum Capabilities {
  public static let sampleRates = [16000, 44100, 48000, 96000]
  public static let channels = [1, 2]
  public static let maxFrameBytes = 262144
- public static let version = "4.0.1"
+ public static let version = "4.0.2"
 }
 public struct Settings: Codable, Equatable, Sendable {
  public var schemaVersion = 1

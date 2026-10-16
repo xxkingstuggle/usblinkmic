@@ -7,7 +7,7 @@ enum class RecordingSource { MICROPHONE, UNPROCESSED, VOICE_RECOGNITION }
 data class AudioParameters(val sampleRate: Int = 44100, val channels: Int = 1, val format: PCMFormat = PCMFormat.I16, val source: RecordingSource = RecordingSource.MICROPHONE)
 object Capabilities {
  const val PROTOCOL_VERSION = 4
- const val VERSION = "4.0.1"
+ const val VERSION = "4.0.2"
  val SAMPLE_RATES = listOf(16000, 44100, 48000, 96000)
  val CHANNELS = listOf(1, 2)
  const val MAX_FRAME_BYTES = 262144

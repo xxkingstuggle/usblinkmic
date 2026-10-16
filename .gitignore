@@ -11,3 +11,5 @@ artifacts/
 *.jks
 *.keystore
 .DS_Store
+
+android/.kotlin/

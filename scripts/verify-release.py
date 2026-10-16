@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import hashlib,json,sys,zipfile
+import hashlib,json,sys,zipfile,plistlib
 root=Path(sys.argv[1]);manifest=json.loads((root/'manifest.json').read_text())
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 assert manifest['protocol']==4
@@ -11,6 +11,9 @@ for line in (root/'SHA256SUMS.txt').read_text().splitlines():
  expected,name=line.split('  ',1);assert sha(root/name)==expected,name
 apk=next(root.glob('USBLinkMic-*.apk'))
 resources=root/'USB LinkMic.app/Contents/Resources'
+info=plistlib.loads((root/'USB LinkMic.app/Contents/Info.plist').read_bytes())
+assert info['CFBundleIconFile']=='AppIcon.icns' and (resources/'AppIcon.icns').stat().st_size>0
+print('PASS Mac bundle icon reference and packaged AppIcon.icns present')
 assert sha(apk)==sha(resources/'companion.apk')==(resources/'companion.sha256').read_text().strip()
 with zipfile.ZipFile(next(root.glob('*macOS.zip'))) as z:
  names=z.namelist();assert 'USB LinkMic.app/Contents/MacOS/USBLinkMic' in names
