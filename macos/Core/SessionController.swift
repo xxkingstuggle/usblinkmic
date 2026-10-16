@@ -15,6 +15,7 @@ private struct OwnedSession: Codable {
  private let root:URL
  private let adb:ADB
  private let journal:URL
+ private let diagnosticLog:DiagnosticLog
  private var owned:[Workspace:OwnedSession]=[:]
  private var jobs:[Workspace:Task<Void,Never>]=[:]
  private var jobIDs:[Workspace:String]=[:]
@@ -23,11 +24,11 @@ private struct OwnedSession: Codable {
  private let receiver=AudioReceiver()
  private let output=AudioOutput()
  private var relay:Process?
- private var lastFrame=Date.distantPast
+ private var audioWatchdog=AudioSessionWatchdog()
+ private var failingAudioSessions=Set<String>()
  private var timer:Task<Void,Never>?
  private var deviceMonitor:Task<Void,Never>?
  private var ncmMonitor:Task<Void,Never>?
- private var requestedRecordingAt:Date?
  private var booted=false
  private var onboardingURL:URL {journal.deletingLastPathComponent().appendingPathComponent("onboarding.json")}
  public init(resourceRoot:URL?=nil, stateDirectory:URL?=nil) {
@@ -35,6 +36,7 @@ private struct OwnedSession: Codable {
   adb=ADB(executable:root.appendingPathComponent("platform-tools/adb"))
   let directory=stateDirectory ?? FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("USBLinkMic-v4")
   store=SettingsStore(url:directory.appendingPathComponent("settings.json"));journal=directory.appendingPathComponent("owned-sessions.json")
+  diagnosticLog=DiagnosticLog(url:directory.appendingPathComponent("diagnostics.log"))
   do {snapshot.settings=try store.load()} catch {snapshot.recoveryMessage="配置加载失败：\(error.localizedDescription)"}
   snapshot.outputs=AudioOutput.devices()
   if let data=try? Data(contentsOf:onboardingURL),let flags=try? JSONDecoder().decode([String:Bool].self,from:data){snapshot.wizardSkipped=flags["skipped"] ?? false;snapshot.soundTestCompleted=flags["soundTest"] ?? false}
@@ -53,9 +55,17 @@ private struct OwnedSession: Codable {
   case .stop(let module):Task{await stop(module)}
   case .stopAll:Task{await stopAll()}
   case .saveSettings(let settings):
-   let errors=SettingsValidator.errors(settings)
-   guard errors.isEmpty else {log("settings","invalid",errors.joined(separator:"；"));return}
-   Task {await stopAll();do {try store.save(settings);snapshot.settings=settings;log("settings","saved","配置已保存；连接参数变更后需重新启动")}catch{log("settings","failed",error.localizedDescription)}}
+   guard !snapshot.isSavingSettings else{return}
+   let errors=SettingsValidator.errors(settings)+SettingsValidator.outputErrors(settings,outputs:AudioOutput.devices())
+   guard errors.isEmpty else {snapshot.settingsMessage=errors.joined(separator:"；");log("settings","invalid",snapshot.settingsMessage);return}
+   snapshot.isSavingSettings=true;snapshot.settingsMessage="正在停止连接并保存设置"
+   Task {
+    defer{snapshot.isSavingSettings=false}
+    await stopAll()
+    guard owned.isEmpty else{snapshot.settingsMessage="停止未完成，设置未保存；请重试全部停止";log("settings","failed",snapshot.settingsMessage);return}
+    do {try store.save(settings);snapshot.settings=settings;snapshot.settingsMessage="设置已保存，请点击开始重新连接";log("settings","saved",snapshot.settingsMessage)}
+    catch{snapshot.settingsMessage="设置保存失败：\(error.localizedDescription)";log("settings","failed",snapshot.settingsMessage)}
+   }
   case .setGain(let gain):guard gain.isFinite,(0...4).contains(gain) else{return};snapshot.settings.gain=gain;output.gain=Float(gain)
   case .setMuted(let muted):snapshot.settings.muted=muted;output.muted=muted
   case .skipWizard:snapshot.wizardSkipped=true;saveOnboarding()
@@ -67,7 +77,7 @@ private struct OwnedSession: Codable {
   }
  }
  private func saveOnboarding(){do{try FileManager.default.createDirectory(at:onboardingURL.deletingLastPathComponent(),withIntermediateDirectories:true);try JSONEncoder().encode(["skipped":snapshot.wizardSkipped,"soundTest":snapshot.soundTestCompleted]).write(to:onboardingURL,options:.atomic)}catch{log("wizard","saveFailed",error.localizedDescription)}}
- private func log(_ module:String,_ stage:String,_ text:String){var safe=text;for serial in Set(snapshot.devices.map{$0.id}+owned.values.map{$0.serial}+[snapshot.selectedDeviceID ?? ""]) where !serial.isEmpty {safe=safe.replacingOccurrences(of:serial,with:"serial=[REDACTED]")};snapshot.logs.append(LogEntry(module:module,stage:stage,message:LogRedactor.redact(safe)));if snapshot.logs.count>500 {snapshot.logs.removeFirst(snapshot.logs.count-500)}}
+ private func log(_ module:String,_ stage:String,_ text:String){var safe=text;for serial in Set(snapshot.devices.map{$0.id}+owned.values.map{$0.serial}+[snapshot.selectedDeviceID ?? ""]) where !serial.isEmpty {safe=safe.replacingOccurrences(of:serial,with:"serial=[REDACTED]")};for credential in Set(owned.values.map{$0.token}+[snapshot.settings.pairingCode]) where !credential.isEmpty {safe=safe.replacingOccurrences(of:credential,with:"[REDACTED]")};let entry=LogEntry(module:module,stage:stage,message:LogRedactor.redact(safe));snapshot.logs.append(entry);do{try diagnosticLog.append(entry)}catch{snapshot.recoveryMessage="诊断日志写入失败：\(error.localizedDescription)"};if snapshot.logs.count>500 {snapshot.logs.removeFirst(snapshot.logs.count-500)}}
  private func status(_ module:Workspace,_ phase:TaskPhase,_ stage:String,_ detail:String="",_ code:String?=nil) {
   var s=ModuleStatus();s.phase=phase;s.stage=stage;s.detail=detail;s.errorCode=code;s.taskID=owned[module]?.id
   switch module{case .microphone:snapshot.microphone=s;case .phoneInternet:snapshot.phoneInternet=s;case .macInternet:snapshot.macInternet=s;default:break}
@@ -88,7 +98,7 @@ private struct OwnedSession: Codable {
   }catch{log("devices","failed",error.localizedDescription)}
  }
  private func start(_ module:Workspace) {
-  guard [.microphone,.phoneInternet,.macInternet].contains(module),jobs[module]==nil,owned[module]==nil,!stopping.contains(module) else{return}
+  guard [.microphone,.phoneInternet,.macInternet].contains(module),jobs[module]==nil,owned[module]==nil,!stopping.contains(module),!snapshot.isSavingSettings else{return}
   let jobID=UUID().uuidString;jobIDs[module]=jobID
   jobs[module]=Task{await execute(module);if jobIDs[module]==jobID {jobs[module]=nil;jobIDs[module]=nil}}
  }
@@ -99,6 +109,10 @@ private struct OwnedSession: Codable {
   if module == .microphone,settings.transport == .wifi {if settings.pairingCode.isEmpty {settings.pairingCode=token;snapshot.settings.pairingCode=token}}
   else {settings.pairingCode=token}
   let serial=snapshot.selectedDeviceID ?? ""
+  if module == .microphone {
+   audioWatchdog.begin(id);snapshot.receivedFrames=0;snapshot.effectiveAudio=nil
+   snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected
+  }
   owned[module]=OwnedSession(id:id,serial:serial,token:settings.pairingCode,module:module.rawValue)
   do {
    try saveJournal();status(module,.checking,"检查前置条件")
@@ -163,11 +177,13 @@ private struct OwnedSession: Codable {
   return response
  }
  private func startAudio(_ id:String,_ serial:String,_ settings:Settings) async throws {
-  if settings.purpose == .virtualMicrophone {guard snapshot.outputs.contains(where:{$0.id==settings.outputUID && $0.isVirtual}) else{throw LinkError.failure("DRIVER_REQUIRED","选择BlackHole输出，并在外部软件选择对应输入；缺失时打开官方安装指引")}}
-  try output.start(settings);snapshot.effectiveAudio=settings.audio;snapshot.receivedFrames=0;lastFrame = .distantPast;requestedRecordingAt=nil
+  let outputErrors=SettingsValidator.outputErrors(settings,outputs:AudioOutput.devices())
+  guard outputErrors.isEmpty else{throw LinkError.failure("DRIVER_REQUIRED",outputErrors.joined(separator:"；"))}
+  try output.start(settings);snapshot.effectiveAudio=settings.audio
+  log("audio","outputStarted","purpose=\(settings.purpose.rawValue), output=\(settings.outputUID), session=\(id)")
   try receiver.start(settings:settings,session:settings.transport == .usb ? id:"wifi",onFrame:{[weak self] data in Task{@MainActor in
    guard let self=self,self.valid(.microphone,id) else{return}
-   do{let (level,trend)=try self.output.consume(data,parameters:settings.audio);self.snapshot.level=level;self.snapshot.waveform=trend;self.snapshot.receivedFrames+=1;self.snapshot.audioState = .streaming;self.lastFrame=Date();if self.snapshot.microphone.phase != .running {self.status(.microphone,.running,"有效音频传输","实际PCM帧已到达；静音帧也计为传输")}}
+   do{let (level,trend)=try self.output.consume(data,parameters:settings.audio);self.snapshot.level=level;self.snapshot.waveform=trend;self.snapshot.receivedFrames+=1;self.snapshot.audioState = .streaming;self.audioWatchdog.frame(id,now:ProcessInfo.processInfo.systemUptime);if self.snapshot.microphone.phase != .running {self.status(.microphone,.running,"有效音频传输","实际PCM帧已到达；静音帧也计为传输")}}
    catch{await self.failAudio(id,error.localizedDescription)}
   }},onError:{[weak self] message in Task{@MainActor in await self?.failAudio(id,message)}})
   snapshot.audioState = .handshake
@@ -179,17 +195,21 @@ private struct OwnedSession: Codable {
   while valid(.microphone,id) {
    do{
     let state=try await poll(.microphone,id);failures=0
-    if state["recording"] as? Bool == true {if requestedRecordingAt==nil {requestedRecordingAt=Date();if snapshot.receivedFrames==0 {snapshot.audioState = .waitingFrame;status(.microphone,.connecting,"等待首包")}};return}
+    if state["recording"] as? Bool == true {audioWatchdog.recording(id,now:ProcessInfo.processInfo.systemUptime);if snapshot.receivedFrames==0 {snapshot.audioState = .waitingFrame;status(.microphone,.connecting,"等待首包")};return}
     if state["cancelled"] as? Bool == true {throw LinkError.failure("USER_CANCELLED","手机已取消本次操作")}
    }catch{failures+=1;if failures>=3 {throw error}}
    try await Task.sleep(nanoseconds:1_000_000_000)
   }
  }
  private func failAudio(_ id:String,_ message:String) async {
-  guard let session=owned[.microphone],session.id==id else{return}
+  guard let session=owned[.microphone],session.id==id,!failingAudioSessions.contains(id) else{return}
+  failingAudioSessions.insert(id);defer{failingAudioSessions.remove(id)}
+  log("audio","failure","session=\(id), frames=\(snapshot.receivedFrames), reason=\(message)")
   if let port=session.controlForward,let response=try? await ControlClient.request(port:port,body:["command":"status","session":id,"token":session.token]),response["cancelled"] as? Bool == true {
+   guard owned[.microphone]?.id==id else{return}
    await stop(.microphone);status(.microphone,.stopped,"手机已停止录音");return
   }
+  guard owned[.microphone]?.id==id else{return}
   await stop(.microphone);snapshot.audioState = .failed;status(.microphone,.failed,"音频失败",message,"AUDIO_FAILED")
  }
  private func startReverse(_ id:String,_ serial:String,_ settings:Settings) async throws {
@@ -277,8 +297,11 @@ private struct OwnedSession: Codable {
   let outputs=AudioOutput.devices();snapshot.outputs=outputs
   if owned[.microphone] != nil,snapshot.settings.outputUID != "default",!outputs.contains(where:{$0.id==snapshot.settings.outputUID}),let id=owned[.microphone]?.id {await failAudio(id,"OUTPUT_REMOVED: 指定输出离线，已停止，避免自动外放")}
   if let id=owned[.microphone]?.id {
-   if snapshot.receivedFrames>0,Date().timeIntervalSince(lastFrame)>3 {await failAudio(id,"INPUT_INTERRUPTED: 超过3秒没有有效帧")}
-   else if snapshot.receivedFrames==0,let started=requestedRecordingAt,Date().timeIntervalSince(started)>15 {await failAudio(id,"FIRST_FRAME_TIMEOUT: 获准开始采音后15秒未收到帧")}
+   switch audioWatchdog.failure(id,now:ProcessInfo.processInfo.systemUptime) {
+   case .interrupted:await failAudio(id,"INPUT_INTERRUPTED: 超过3秒没有有效帧")
+   case .firstFrame:await failAudio(id,"FIRST_FRAME_TIMEOUT: 获准开始采音后15秒未收到帧")
+   case nil:break
+   }
   }
   if let s=owned[.macInternet],snapshot.macInternet.phase == .running {
    do{let state=try await poll(.macInternet,s.id);if state["cancelled"] as? Bool == true {await stop(.macInternet);status(.macInternet,.stopped,"手机已停止VPN");return};if state["network"] as? String != "available" {throw LinkError.failure("NETWORK_LOST","手机请求验证失败")}}catch{await stop(.macInternet);status(.macInternet,.failed,"网络已中断",error.localizedDescription)}
@@ -336,7 +359,7 @@ private struct OwnedSession: Codable {
   guard let session=owned.removeValue(forKey:module) else{return}
   stopping.insert(module);defer{stopping.remove(module)}
   status(module,.stopping,"正在停止")
-  if module == .microphone {receiver.stop();output.stop();snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected;requestedRecordingAt=nil}
+  if module == .microphone {receiver.stop();output.stop();snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected;audioWatchdog.stop(session.id);snapshot.receivedFrames=0;snapshot.effectiveAudio=nil}
   if module == .phoneInternet {ncmMonitor?.cancel();ncmMonitor=nil;ncmInterface=nil;snapshot.networkState = .stopped}
   if module == .macInternet {relay?.terminationHandler=nil;if relay?.isRunning==true {relay?.terminate()};relay=nil;snapshot.networkState = .stopped}
   do{try await cleanup(session);try saveJournal();status(module,.stopped,"已停止")}

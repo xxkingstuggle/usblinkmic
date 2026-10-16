@@ -22,7 +22,7 @@ public enum Capabilities {
  public static let sampleRates = [16000, 44100, 48000, 96000]
  public static let channels = [1, 2]
  public static let maxFrameBytes = 262144
- public static let version = "4.0.0"
+ public static let version = "4.0.1"
 }
 public struct Settings: Codable, Equatable, Sendable {
  public var schemaVersion = 1
@@ -82,6 +82,8 @@ public struct AppSnapshot: Sendable {
  public var notificationPermission: PermissionState = .notRequested
  public var vpnPermission: PermissionState = .notRequested
  public var settings = Settings()
+ public var isSavingSettings = false
+ public var settingsMessage = ""
  public var logs: [LogEntry] = []
  public var level: Double = 0
  public var waveform: [Double] = []

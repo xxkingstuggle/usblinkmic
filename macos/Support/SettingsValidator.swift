@@ -2,6 +2,13 @@ import Contracts
 import Foundation
 
 public enum SettingsValidator {
+    public static func outputErrors(_ settings: Settings, outputs: [OutputDevice]) -> [String] {
+        guard settings.purpose == .virtualMicrophone else { return [] }
+        guard outputs.contains(where: { $0.id == settings.outputUID && $0.isVirtual }) else {
+            return ["虚拟麦克风需要选择已连接的 BlackHole 输出设备；请先安装 BlackHole 或改用本机试听。"]
+        }
+        return []
+    }
     public static func errors(_ settings: Settings) -> [String] {
         guard settings.schemaVersion == 1 else {
             return ["Unsupported schemaVersion: \(settings.schemaVersion)"]

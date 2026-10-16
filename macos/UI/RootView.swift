@@ -250,9 +250,12 @@ public struct RootView: View {
                     )
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(snapshot.microphone.phase == .stopping)
+                .disabled(snapshot.microphone.phase == .stopping || snapshot.isSavingSettings)
 
-                if settingsDraft.purpose == .virtualMicrophone {
+                if !snapshot.settingsMessage.isEmpty {
+                    Text(snapshot.settingsMessage).font(.caption).foregroundStyle(.secondary)
+                }
+                if snapshot.settings.purpose == .virtualMicrophone {
                     Button {
                         send(.openDriverHelp)
                     } label: {
@@ -813,7 +816,7 @@ private struct SettingsSheet: View {
     let onSave: () -> Void
 
     private var errors: [String] {
-        SettingsValidator.errors(settings)
+        SettingsValidator.errors(settings) + SettingsValidator.outputErrors(settings, outputs: outputs)
     }
 
     var body: some View {
@@ -866,11 +869,15 @@ private struct SettingsSheet: View {
                         Text("虚拟麦克风").tag(OutputPurpose.virtualMicrophone)
                     }
                     Picker("输出设备", selection: $settings.outputUID) {
-                        Text("系统默认设备").tag("default")
+                        if settings.purpose == .monitor {
+                            Text("系统默认设备").tag("default")
+                        } else if !outputs.contains(where: { $0.id == settings.outputUID && $0.isVirtual }) {
+                            Text("请选择 BlackHole 输出").tag(settings.outputUID)
+                        }
                         if settings.outputUID != "default" && !outputs.contains(where: { $0.id == settings.outputUID }) {
                             Text("已选输出设备暂不可用").tag(settings.outputUID)
                         }
-                        ForEach(outputs) { output in
+                        ForEach(outputs.filter { settings.purpose == .monitor || $0.isVirtual }) { output in
                             Text(output.name).tag(output.id)
                         }
                     }
@@ -910,6 +917,16 @@ private struct SettingsSheet: View {
         }
         .frame(minWidth: 560, minHeight: 570)
         .onChange(of: settings) { _, _ in isDirty = true }
+        .onChange(of: settings.purpose) { old, purpose in
+            if purpose == .virtualMicrophone {
+                let virtualOutputs = outputs.filter { $0.isVirtual }
+                if !virtualOutputs.contains(where: { $0.id == settings.outputUID }), virtualOutputs.count == 1 {
+                    settings.outputUID = virtualOutputs[0].id
+                }
+            } else if old == .virtualMicrophone {
+                settings.outputUID = "default"
+            }
+        }
     }
 }
 

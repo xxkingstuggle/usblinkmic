@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-version="${1:-4.0.0-review.1}"
+version="${1:-4.0.1-review.1}"
 [[ "$version" =~ ^[0-9A-Za-z.-]+$ ]]
 release="$HOME/Developer/releases/usblinkmic/$version"
 if [[ -e "$release" ]]; then echo 'Refusing to overwrite an existing release directory' >&2; exit 1; fi
@@ -44,7 +44,7 @@ python3 - "$app" <<'PY'
 from pathlib import Path
 import sys,plistlib
 app=Path(sys.argv[1])
-p={'CFBundleExecutable':'USBLinkMic','CFBundleIdentifier':'com.zjx.usblinkmic.mac','CFBundleName':'USB LinkMic','CFBundleDisplayName':'USB LinkMic','CFBundlePackageType':'APPL','CFBundleShortVersionString':'4.0.0','CFBundleVersion':'40000','LSMinimumSystemVersion':'26.0','NSHighResolutionCapable':True,'NSLocalNetworkUsageDescription':'通过你选择的本地地址接收Android手机的Wi-Fi音频。'}
+p={'CFBundleExecutable':'USBLinkMic','CFBundleIdentifier':'com.zjx.usblinkmic.mac','CFBundleName':'USB LinkMic','CFBundleDisplayName':'USB LinkMic','CFBundlePackageType':'APPL','CFBundleShortVersionString':'4.0.1','CFBundleVersion':'40001','LSMinimumSystemVersion':'26.0','NSHighResolutionCapable':True,'NSLocalNetworkUsageDescription':'通过你选择的本地地址接收Android手机的Wi-Fi音频。'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(p))
 PY
 codesign --force --sign - "$app/Contents/Resources/platform-tools/adb"

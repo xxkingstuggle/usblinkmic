@@ -19,8 +19,8 @@ assert len(list((root/'macos/CoreTests').glob('*.swift')))>0
 print('PASS frozen T01-T24 rows preserved; manual device tests remain pending, not skipped or passed')
 
 swift=(root/'artifacts/swift-latest.log').read_text()
-for suite,minimum in [('SupportTests',5),('CoreTests',10),('RenderTests',1)]:
+for suite,minimum in [('SupportTests',5),('CoreTests',10),('RenderTests',1),('AudioSessionWatchdogTests',3),('OutputSettingsTests',2)]:
  match=re.search(r"Test Suite '"+suite+r"' passed[^\n]*\n\s*Executed (\d+) tests?, with 0 failures",swift)
  assert match and int(match.group(1))>=minimum, 'Swift baseline regression: '+suite
 assert not re.search(r'Test Case .*skipped',swift,re.I)
-print('PASS Swift test baseline >=16: Core10/Support5/Render1, 0 failures and skips')
+print('PASS Swift test baseline >=21: Core10/Support5/Render1/Watchdog3/OutputSettings2, 0 failures and skips')

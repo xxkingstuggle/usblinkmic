@@ -25,3 +25,8 @@ NCM clarification v1.1: visible companion request mode `ncm` confirms and opens 
 Protocol discovery v1.2: read-only `content://com.zjx.usblinkmic.capabilities` provider returns protocol/capabilities only to Android shell/system/self (DUMP permission plus UID check). Mac uses protocol4 discovery, not display versionCode, to decide compatibility/update; wire handshake independently rechecks identity and exact format. Probe never starts permissions or services. App update uses install -r, without uninstall or downgrade override.
 Cancellation clarification v1.3: install subprocess is cancellable; short ADB resource commands return their receipts even after cancellation so freshly-created mappings can be removed precisely. Failed control-stop delivery falls back to visible companion `mode=cancel` with the matching session/token; the companion records an in-memory cancellation tombstone before any late start request and never launches a service for that cancelled pair. No permission is granted. Tests cover owned-process task cancellation.
 Crash recovery records relay PID plus executable path and unique JVM session property; recovery inspects exact process identity before signalling it, never terminates a recycled PID. App-owned journal/config directories are0700 and secret-bearing JSON files0600. Failed cleanup retains its journal for explicit recovery; a changed mapping/USB function/process ownership is not overwritten.
+
+## 4.0.1 会话与设置补充
+- Mac AppSnapshot 增加 isSavingSettings/settingsMessage，供界面显示真实保存阶段与结果。保存前统一校验虚拟输出，保存中不允许开始会话；资源停止失败则不提交设置。
+- 断流/首包期限按会话隔离，使用单调时钟；未确认录音且未收到帧的准备/授权阶段不计时。停止清除帧数与有效参数。旧会话回调不得影响新会话。协议仍为4，设置schema仍为1。
+- 脱敏事件仅本地持久化，最大256KiB，0600；不保存音频、配对码或设备标识。
