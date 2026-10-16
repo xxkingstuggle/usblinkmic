@@ -149,10 +149,10 @@ public struct RootView: View {
 
     private var brand: some View {
         HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage)
+            Image(nsImage: NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath))
                 .resizable()
                 .scaledToFit()
-                .frame(width: 32, height: 32)
+                .frame(width: 24, height: 24)
             VStack(alignment: .leading, spacing: 1) {
                 Text("USB LinkMic")
                     .font(.headline)

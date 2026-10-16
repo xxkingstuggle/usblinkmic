@@ -17,9 +17,6 @@ import UI
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
  weak var controller:SessionController?
  private var terminating=false
- func applicationDidFinishLaunching(_ notification:Notification) {
-  if let url=Bundle.main.url(forResource:"AppIcon",withExtension:"icns"),let icon=NSImage(contentsOf:url) {NSApp.applicationIconImage=icon}
- }
  func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
   guard !terminating else{return .terminateLater};terminating=true
   Task {
