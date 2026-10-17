@@ -13,3 +13,6 @@ artifacts/
 .DS_Store
 
 android/.kotlin/
+
+# Private diagnostics and screenshots must not be published.
+docs/evidence/

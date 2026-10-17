@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 version="${1:-4.0.8-review.1}"
 [[ "$version" =~ ^[0-9A-Za-z.-]+$ ]]
-release="$HOME/Developer/releases/usblinkmic/$version"
+release="${USBLINKMIC_RELEASE_ROOT:-$HOME/Developer/releases/usblinkmic}/$version"
 if [[ -e "$release" ]]; then echo 'Refusing to overwrite an existing release directory' >&2; exit 1; fi
 [[ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]]
 [[ -x .tools/android-platform/platform-tools/adb ]]
@@ -24,13 +24,14 @@ if [[ ! -d artifacts/runtime-build/runtime ]]; then
  "$JAVA_HOME/bin/jlink" --add-modules java.base,java.logging,java.naming,jdk.crypto.ec --strip-debug --no-header-files --no-man-pages --output artifacts/runtime-build/runtime
 fi
 mkdir -p "$release"
-tools=$HOME/Library/Android/sdk/build-tools/35.0.0
+tools="${ANDROID_HOME:-$HOME/Library/Android/sdk}/build-tools/35.0.0"
 "$tools/zipalign" -P 16 -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk "artifacts/aligned-$version.apk"
 "$tools/apksigner" sign --ks .tools/signing/companion.jks --ks-key-alias companion --ks-pass file:.tools/signing/password --out "$release/USBLinkMic-$version.apk" "artifacts/aligned-$version.apk"
 "$tools/apksigner" verify --verbose --print-certs "$release/USBLinkMic-$version.apk" > "$release/apk-signature.txt"
 app="$release/USB LinkMic.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/platform-tools" "$app/Contents/Resources/licenses"
 cp .build/release/USBLinkMic "$app/Contents/MacOS/USBLinkMic"
+strip -S "$app/Contents/MacOS/USBLinkMic"
 cp "$release/USBLinkMic-$version.apk" "$app/Contents/Resources/companion.apk"
 shasum -a 256 "$app/Contents/Resources/companion.apk" | cut -d ' ' -f 1 > "$app/Contents/Resources/companion.sha256"
 cp .tools/android-platform/platform-tools/adb "$app/Contents/Resources/platform-tools/adb"
