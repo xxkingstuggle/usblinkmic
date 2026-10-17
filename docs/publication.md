@@ -22,4 +22,14 @@ hdiutil verify USBLinkMic-4.0.8-public.dmg
 
 本次没有运行音频、供网、单元或集成测试；维护者自行做功能测试。静态检查不代表T01—T24全部通过，完整场景保留在acceptance.md。
 
-GitHub上传后的附件校验、匿名访问和本地发行临时文件清理结果将在发布后补记。
+GitHub已确认10个附件的大小和SHA256全部一致；随后未带登录凭证逐个下载，10个附件均返回HTTP 200且内容SHA256一致。仓库与v4.0.8发布页面未登录访问均返回200。两个私有归档未登录访问均返回404。
+
+公开前最后一次全历史扫描覆盖6个引用、369个文件版本，所检查的敏感格式匹配数为0。公开说明的后续更新另作增量检查。临时发行目录和临时Git导入已清理；私有历史备份及签名材料保留。当前安装未改动。
+
+发行文件指纹：
+
+|文件|SHA256|
+|---|---|
+|USBLinkMic-4.0.8-public-macOS.zip|`97ab33bd2b8b49b8f9555e7af769f213dce4fdf670fa3aa87b809f16422aa496`|
+|USBLinkMic-4.0.8-public.dmg|`7c10cba917b6eb97a7621bb6a5efb19cec866ae75ff5e1c003bcd74847ded4fc`|
+|USBLinkMic-4.0.8-review.4.apk|`b08ec6065545cf24f36be502d19a522bbc19903eba4cdbaeea305d07d8331a48`|
