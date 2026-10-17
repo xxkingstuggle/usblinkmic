@@ -1,13 +1,20 @@
-# 当前图标约定 — 2026-10-17
+# 图标资源
 
-用户指定assets/branding/app-icon-source.png作为两端图案。Android继续用原图派生各密度、圆形和自适应图标，自适应保留12dp安全边距。早期图标记录保留于私有历史，不代表当前资源。
+两端图标源文件位于 `assets/branding/app-icon-source.png`，派生资源及 SHA256 记录在 [icon-provenance.json](icon-provenance.json)。
 
-Mac当前策略为4.0.8-review.4：经imagegen处理外侧透明背景，生成资产mac-app-icon.png；用scripts/prepare-mac-icon.swift去掉边缘碎屑、裁剪底板，输出mac-app-icon-prepared.png。1024像素RGBA画布内820像素圆角底板，四边102像素透明。原蓝色图案保留，未改Android。由prepare-icons.py和系统sips派生10个Mac尺寸，系统iconutil生成ICNS。
+## macOS
 
-包内同时包含AppIcon.icns和DockIcon.png。启动完成及SwiftUI窗口onAppear明确加载PNG，逻辑尺寸固定128点，设置applicationIconImage并刷新DockTile；专用branding日志记录实际应用。侧栏24点，使用系统图标。禁止再直接加载不透明满画布原图，也不能仅删除加载代码后假定系统一定显示成功。
+`mac-app-icon.png` 是透明背景的 Mac 图标源图。`prepare-mac-icon.swift` 裁剪底板并保留透明边距，输出 `mac-app-icon-prepared.png`。1024 像素画布中，底板占 820 像素，四边各留 102 像素。
 
-review.2删除加载后用户截图出现占位图；review.3仅有构建/安装记录，未找到加载日志。review.4已取得运行进程branding日志，说明已加载固定尺寸透明图标。Dock工具画面仍不可读，不冒充目视验收。版本仍4.0.8/40008，以review.4与sourceCommit区分，音频/供网不变。
+```sh
+swift scripts/prepare-mac-icon.swift assets/branding/mac-app-icon.png assets/branding/mac-app-icon-prepared.png
+python3 scripts/prepare-icons.py
+```
 
-来源、派生路径及SHA见icon-provenance.json。重新制作：先运行`swift scripts/prepare-mac-icon.swift assets/branding/mac-app-icon.png assets/branding/mac-app-icon-prepared.png`，再运行`python3 scripts/prepare-icons.py`。不清全局Dock/Finder缓存、不改用户Dock大小或应用数据。
+Mac 图标集包含 10 个尺寸，打包时使用系统 `iconutil` 生成 `AppIcon.icns`。应用同时包含 `DockIcon.png`，启动和窗口出现时加载，逻辑尺寸为 128 点。
 
-公开资源已去除 PNG 的生成凭证、EXIF 和文本附加块，像素数据不变；指纹已更新。
+## Android
+
+Android 从源图生成各密度、圆形及自适应图标。自适应图标保留 12dp 安全边距，派生资源由 `scripts/prepare-icons.py` 生成。
+
+替换源图后，需要重新生成两端资源并更新 `icon-provenance.json` 中的指纹。
