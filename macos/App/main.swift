@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import os
 import Core
 import UI
 
@@ -8,7 +7,7 @@ import UI
  @StateObject private var controller = SessionController()
  @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
  var body: some Scene {
-  WindowGroup("USB LinkMic") {RootView(snapshot:controller.snapshot,send:controller.send).frame(minWidth:720,minHeight:520).onAppear{delegate.controller=controller;delegate.installDockIcon();controller.boot()}}
+  WindowGroup("USB LinkMic") {RootView(snapshot:controller.snapshot,send:controller.send).frame(minWidth:720,minHeight:520).onAppear{delegate.controller=controller;controller.boot()}}
   .commands {
    CommandGroup(after:.appSettings) {Button("设置…"){NotificationCenter.default.post(name:Notification.Name("USBLinkMic.showSettings"),object:nil)}.keyboardShortcut(",")}
    CommandMenu("连接") {Button("刷新"){controller.send(.refresh)}.keyboardShortcut("r");Button("全部停止"){controller.send(.stopAll)}.keyboardShortcut(".")}
@@ -18,14 +17,6 @@ import UI
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
  weak var controller:SessionController?
  private var terminating=false
- func applicationDidFinishLaunching(_ notification:Notification) {installDockIcon()}
- func installDockIcon() {
-  guard let url=Bundle.main.url(forResource:"DockIcon",withExtension:"png"),let icon=NSImage(contentsOf:url),icon.isValid else{NSLog("USBLinkMic Dock icon load FAILED");return}
-  icon.size=NSSize(width:128,height:128)
-  NSApp.applicationIconImage=icon
-  NSApp.dockTile.display()
-  Logger(subsystem:"com.zjx.usblinkmic.mac",category:"branding").notice("Dock icon applied:128pt,transparent PNG")
- }
  func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
   guard !terminating else{return .terminateLater};terminating=true
   Task {

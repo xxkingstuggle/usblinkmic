@@ -42,7 +42,6 @@ cp artifacts/relay.jar "$app/Contents/Resources/relay.jar"
 ditto artifacts/runtime-build/runtime "$app/Contents/Resources/runtime"
 cp docs/dependencies.md "$app/Contents/Resources/licenses/dependencies.md"
 python3 scripts/package-icon.py macos/Resources/AppIcon.iconset "$app/Contents/Resources/AppIcon.icns"
-cp assets/branding/mac-app-icon-prepared.png "$app/Contents/Resources/DockIcon.png"
 python3 - "$app" <<'PY'
 from pathlib import Path
 import sys,plistlib

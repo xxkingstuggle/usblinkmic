@@ -1,0 +1,7 @@
+2026-10-18. Built-in imagegen; reference: app-icon-source.png.
+Generate a clean 1024x1024 full-bleed square master on opaque pure white.
+Keep the original blue smartphone, connecting cable and laptop with five audio bars.
+Center the symbols, approximately 80% canvas width and 52% height.
+Crisp vector-like geometry, subtle cyan-to-cobalt symbol gradient.
+No rounded outer tile, border, shadow, texture, text, watermark or transparent cutout.
+The native Swift preparation script applies one smooth rounded tile and transparent margins.
