@@ -43,6 +43,12 @@ object Runtime {
  private var server: ServerSocket? = null
  private val main = android.os.Handler(android.os.Looper.getMainLooper())
  private var diagnosticFile: File? = null
+ @Volatile private var audioUiVisible = false
+ private data class PendingAudioMeter(val request: Request, val update: (AppSnapshot) -> AppSnapshot)
+ private val audioMeterLock = Any()
+ private var pendingAudioMeter: PendingAudioMeter? = null
+ private var audioMeterDrainScheduled = false
+ private val audioMeterDrain = Runnable { drainAudioMeter() }
  @Synchronized fun attach(context: Context) {
   if(diagnosticFile!=null)return
   val file=File(context.applicationContext.filesDir,"diagnostics.jsonl")
@@ -73,6 +79,50 @@ object Runtime {
   catch(e:Exception){Log.e("USBLinkMic","diagnostics clear failed: ${e.javaClass.simpleName}")}
  }
  fun update(block: (AppSnapshot) -> AppSnapshot) { main.post { state.value = block(state.value) } }
+ fun setAudioUiVisible(visible: Boolean) {
+  audioUiVisible = visible
+  if (!visible) synchronized(audioMeterLock) { pendingAudioMeter = null }
+ }
+ fun isAudioUiVisible(): Boolean = audioUiVisible
+ fun updateAudio(request: Request, block: (AppSnapshot) -> AppSnapshot) {
+  main.post { if(audioRequest === request && !request.cancelled) state.value = block(state.value) }
+ }
+ fun updateAudioMeter(request: Request, block: (AppSnapshot) -> AppSnapshot) {
+  val shouldPost = synchronized(audioMeterLock) {
+   if (!audioUiVisible || audioRequest !== request || request.cancelled) return
+   pendingAudioMeter = PendingAudioMeter(request, block)
+   if (audioMeterDrainScheduled) false else {
+    audioMeterDrainScheduled = true
+    true
+   }
+  }
+  if (shouldPost && !main.post(audioMeterDrain)) {
+   synchronized(audioMeterLock) {
+    pendingAudioMeter = null
+    audioMeterDrainScheduled = false
+   }
+  }
+ }
+ private fun drainAudioMeter() {
+  val pending = synchronized(audioMeterLock) {
+   pendingAudioMeter.also { pendingAudioMeter = null }
+  }
+  if (pending != null && audioUiVisible && audioRequest === pending.request && !pending.request.cancelled) {
+   state.value = pending.update(state.value)
+  }
+  val shouldPostAgain = synchronized(audioMeterLock) {
+   if (pendingAudioMeter == null) {
+    audioMeterDrainScheduled = false
+    false
+   } else true
+  }
+  if (shouldPostAgain && !main.post(audioMeterDrain)) {
+   synchronized(audioMeterLock) {
+    pendingAudioMeter = null
+    audioMeterDrainScheduled = false
+   }
+  }
+ }
  fun log(module: String, stage: String, message: String) {
   var safe=message
   for(token in requests.values.map{it.token}+cancelledSessions.values) if(token.isNotEmpty())safe=safe.replace(token,"[REDACTED]")
@@ -88,6 +138,7 @@ object Runtime {
   return p.sampleRate in Capabilities.SAMPLE_RATES && p.channels in Capabilities.CHANNELS && AudioRecord.getMinBufferSize(p.sampleRate, channels, encoding) > 0
  }
  fun beginControl(context: Context, port: Int) {
+  val appContext=context.applicationContext
   if (server != null && server!!.localPort==port) return
   check(server==null || requests.values.none{it.accepted && !it.cancelled}) { "CONTROL_PORT_BUSY" }
   server?.close()
@@ -107,13 +158,24 @@ object Runtime {
       val cancelledBeforeStart=request==null && tombstone!=null && java.security.MessageDigest.isEqual(command.optString("token").toByteArray(),tombstone.toByteArray())
       val reply = if(command.optInt("controlRevision",-1)!=Capabilities.CONTROL_REVISION) JSONObject().put("error","CONTROL_REVISION_MISMATCH") else if(cancelledBeforeStart) JSONObject().put("protocol",4).put("session",command.optString("session")).put("cancelled",true).put("accepted",false).put("cancelAccepted",true).put("producerStopped",true).put("error","") else if (!authorized) JSONObject().put("error", "AUTH_REQUIRED") else {
        request!!
+       val microphonePermission = if(request.mode=="audio" || request.mode=="wifi") {
+        if(appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)==android.content.pm.PackageManager.PERMISSION_GRANTED) PermissionState.ALLOWED
+        else when(state.value.microphonePermission) {
+         PermissionState.WAITING -> PermissionState.WAITING
+         PermissionState.DENIED -> PermissionState.DENIED
+         PermissionState.SETTINGS_REQUIRED -> PermissionState.SETTINGS_REQUIRED
+         else -> PermissionState.DENIED
+        }
+       } else state.value.microphonePermission
        if(command.optString("command")=="ncmState" && request.mode=="ncm" && request.accepted && !request.cancelled) update { it.copy(phoneInternet=if(command.optString("network")=="connected") ModuleStatus(TaskPhase.RUNNING,"USB共享已连接") else ModuleStatus(TaskPhase.CONNECTING,"正在等待USB连接")) }
-       if (command.optString("command") == "stop") { request.cancelled = true; stop(context, request) }
+       if (command.optString("command") == "stop") { request.cancelled = true; stop(appContext, request) }
        val s = state.value
-       JSONObject().put("protocol", 4).put("session", request.session).put("cancelled", request.cancelled).put("cancelAccepted",request.cancelled).put("producerStopped",when(request.mode){"audio","wifi" -> audioRequest !== request || !MicrophoneService.recording;"vpn" -> vpnRequest !== request;else -> true}).put("error", request.error)
-        .put("accepted",request.accepted).put("recording", audioRequest === request && MicrophoneService.recording)
-        .put("microphonePermission", permission(s.microphonePermission)).put("notificationPermission", permission(s.notificationPermission)).put("vpnPermission", permission(s.vpnPermission))
+       val response = JSONObject().put("protocol", 4).put("session", request.session).put("cancelled", request.cancelled).put("cancelAccepted",request.cancelled).put("producerStopped",when(request.mode){"audio","wifi" -> !MicrophoneService.hasCapture(request);"vpn" -> vpnRequest !== request;else -> true}).put("error", request.error)
+        .put("accepted",request.accepted).put("recording", MicrophoneService.isRecording(request))
+        .put("microphonePermission", permission(microphonePermission)).put("notificationPermission", permission(s.notificationPermission)).put("vpnPermission", permission(s.vpnPermission))
         .put("network", when(s.macInternet.phase) { TaskPhase.RUNNING -> "connected"; TaskPhase.FAILED -> "failed"; else -> "preparing" })
+       if(request.mode=="audio" || request.mode=="wifi") MicrophoneService.addStatusFields(response,request)
+       response
       }
       reply.put("controlRevision",Capabilities.CONTROL_REVISION)
       socket.getOutputStream().write((reply.toString() + "\n").toByteArray())
@@ -125,17 +187,39 @@ object Runtime {
  private fun permission(p: PermissionState) = when(p) { PermissionState.NOT_REQUESTED -> "notRequested"; PermissionState.WAITING -> "waiting"; PermissionState.ALLOWED -> "allowed"; PermissionState.DENIED -> "denied"; PermissionState.SETTINGS_REQUIRED -> "settingsRequired" }
  fun stop(context: Context, request: Request) {
   request.cancelled = true
-  update { when(request.mode){"ncm" -> it.copy(phoneInternet=ModuleStatus());"vpn" -> it.copy(macInternet=ModuleStatus());else -> it.copy(microphone=ModuleStatus(),level=0.0,waveform=emptyList(),controlledByMac=false)} }
+  update { when(request.mode){"ncm" -> it.copy(phoneInternet=ModuleStatus());"vpn" -> it.copy(macInternet=ModuleStatus());else -> if(audioRequest === request || audioRequest == null) it.copy(microphone=ModuleStatus(),level=0.0,waveform=emptyList(),controlledByMac=false) else it} }
   when(request.mode) {
-   "audio", "wifi" -> if(audioRequest === request) { context.stopService(Intent(context, MicrophoneService::class.java)); MicrophoneService.stopCapture() }
+   "audio", "wifi" -> if(audioRequest === request) { context.stopService(Intent(context, MicrophoneService::class.java)); MicrophoneService.stopCapture(request); audioRequest = null }
    "vpn" -> if(vpnRequest === request) context.stopService(Intent(context, LinkVpnService::class.java))
    "ncm" -> update { it.copy(phoneInternet=ModuleStatus()) }
   }
  }
+ fun handleAdbCancel(context: Context, intent: Intent): Boolean {
+  val session = intent.getStringExtra("session") ?: return false
+  val token = intent.getStringExtra("token") ?: return false
+  if (!token.matches(Regex("[a-fA-F0-9]{32}")) || session.isBlank() || session.length > 64) {
+   log("control", "invalidCommand", "会话标识或凭据格式无效")
+   return false
+  }
+  val previous = requests[session]
+  if (previous != null && !java.security.MessageDigest.isEqual(previous.token.toByteArray(), token.toByteArray())) {
+   log("control", "cancelRejected", "取消凭据与原会话不符")
+   return false
+  }
+  if (previous != null) stop(context, previous)
+  else cancelledSessions[session] = token
+  try {
+   beginControl(context, intent.getIntExtra("controlPort", 48125))
+  } catch (e: Exception) {
+   log("control", "cancelReceiptFailed", e.message ?: "控制通道不可用")
+  }
+  log("control", "cancelReceived", "已处理本次取消请求")
+  return true
+ }
  fun fail(request: Request, error: String) {
   request.error = error
   log(request.mode,"failed",error)
-  update { if (request.mode == "ncm") it.copy(phoneInternet=ModuleStatus(TaskPhase.FAILED,"共享失败",error,"NCM_FAILED")) else if (request.mode == "vpn") it.copy(macInternet = ModuleStatus(TaskPhase.FAILED,"供网失败",error,"NETWORK_FAILED")) else it.copy(microphone = ModuleStatus(TaskPhase.FAILED,"音频失败",error,"AUDIO_FAILED"), level=0.0,waveform=emptyList()) }
+  update { if (request.mode == "ncm") it.copy(phoneInternet=ModuleStatus(TaskPhase.FAILED,"共享失败",error,"NCM_FAILED")) else if (request.mode == "vpn") it.copy(macInternet = ModuleStatus(TaskPhase.FAILED,"供网失败",error,"NETWORK_FAILED")) else if(audioRequest === request || audioRequest == null || requests[request.session] === request) it.copy(microphone = ModuleStatus(TaskPhase.FAILED,"音频失败",error,"AUDIO_FAILED"), level=0.0,waveform=emptyList(),controlledByMac=false) else it }
  }
  fun source(p: AudioParameters) = when(p.source) { RecordingSource.MICROPHONE -> MediaRecorder.AudioSource.MIC; RecordingSource.UNPROCESSED -> MediaRecorder.AudioSource.UNPROCESSED; RecordingSource.VOICE_RECOGNITION -> MediaRecorder.AudioSource.VOICE_RECOGNITION }
 }

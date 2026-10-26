@@ -16,14 +16,10 @@ import UI
 }
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
  weak var controller:SessionController?
- private var terminating=false
+ private let termination=TerminationCoordinator()
  func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
-  guard !terminating else{return .terminateLater};terminating=true
-  Task {
-   let restored=await controller?.shutdown() ?? true
-   terminating=false
-   NSApp.reply(toApplicationShouldTerminate:restored)
+  termination.requestTermination(controller:controller) { shouldTerminate in
+   NSApp.reply(toApplicationShouldTerminate:shouldTerminate)
   }
-  return .terminateLater
  }
 }

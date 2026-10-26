@@ -48,9 +48,10 @@ import Foundation
  }
  func setFunctions(_ value:String,serial:String,respectCancellation:Bool=true,reconnectSeconds:TimeInterval=45,confirmationSeconds:TimeInterval=15) async throws {
   guard Self.validFunctions(value) else{throw LinkError.failure("USB_STATE_UNKNOWN","USB功能值无效")}
-  let result=try await ProcessRunner.run(adb.executable,["-s",serial,"shell","svc","usb","setFunctions",value],timeout:8,cancellable:false)
+  let commandArgs=value=="none" ? ["-s",serial,"shell","svc","usb","setFunctions"]:["-s",serial,"shell","svc","usb","setFunctions",value]
+  let result=try await ProcessRunner.run(adb.executable,commandArgs,timeout:8,cancellable:false)
   trace("usbSetFunctions","requested=\(value), exit=\(result.code), output=\(result.output.prefix(1200))")
-  if result.output.range(of:"SecurityException|permission denied|unknown function|invalid function|not supported",options:[.regularExpression,.caseInsensitive]) != nil {
+  if result.output.range(of:"SecurityException|permission denied|unknown function|invalid function|invalid usb function|not supported",options:[.regularExpression,.caseInsensitive]) != nil {
    throw LinkError.failure("ROM_UNSUPPORTED",result.output)
   }
   try await waitForDevice(serial,seconds:reconnectSeconds,respectCancellation:respectCancellation)
@@ -63,7 +64,7 @@ import Foundation
    let expected=Self.functions(value)
    if let active=current.active {
     let actual=Self.functions(active)
-    if actual==expected || (expected==["ncm"] && actual.contains("ncm")) {return}
+    if actual==expected || (expected==["ncm"] && actual.contains("ncm")) || (expected==["none"] && !actual.contains("ncm") && actual.subtracting(["none","adb"]).isEmpty) {return}
    }
    if expected==["ncm"] {
     do {

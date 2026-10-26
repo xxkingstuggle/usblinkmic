@@ -8,10 +8,14 @@ import android.os.Bundle
 import com.zjx.usblinkmic.contracts.*
 /** Read-only protocol discovery for adb shell; never requests permission or starts a service. */
 class CapabilityProvider:ContentProvider() {
+ companion object {
+  internal fun isAllowedCallerUid(callingUid:Int,appUid:Int):Boolean =
+   callingUid==0 || callingUid==2000 || callingUid==1000 || callingUid==appUid
+ }
  override fun onCreate():Boolean {context?.let{Runtime.attach(it)};return true}
  override fun call(method:String,arg:String?,extras:Bundle?):Bundle {
   val uid=Binder.getCallingUid()
-  check(uid==2000 || uid==android.os.Process.myUid() || uid==1000){"CAPABILITIES_READ_DENIED"}
+  check(isAllowedCallerUid(uid,android.os.Process.myUid())){"CAPABILITIES_READ_DENIED"}
   require(method=="capabilities"){"UNKNOWN_READ_METHOD"}
   return Bundle().apply {
    putInt("protocol",Capabilities.PROTOCOL_VERSION)

@@ -243,7 +243,7 @@ private fun MicrophoneCard(
 
             StatusDetails(status)
             Text("Mac 目标：${settings.wifiHost.ifBlank { "尚未配置" }}:${settings.audioPort}")
-            Text("配对码：${if (settings.pairingCode.isBlank()) "尚未配置" else "••••••••"}")
+            Text("配对码：${if (settings.pairingCode.isBlank()) "免配对码（留空）" else "••••••••"}")
             Text("控制方式：${if (controlledByMac) "由 Mac 控制" else "手机端"}")
 
             if (settingsDirty) {
@@ -476,7 +476,7 @@ private fun PairingCodeField(value: String, onValueChange: (String) -> Unit) {
         value = value,
         onValueChange = onValueChange,
         modifier = Modifier.fillMaxWidth().testTag("pairing-code"),
-        label = { Text("Wi-Fi 配对码") },
+        label = { Text("Wi-Fi 配对码（可选，留空则免配对码）") },
         singleLine = true,
         visualTransformation = if (revealed) VisualTransformation.None else PasswordVisualTransformation(),
         trailingIcon = {

@@ -39,6 +39,14 @@ object SettingsValidator {
         }
         return issues
     }
+
+    fun wifiStartErrors(settings: Settings): List<String> {
+        val issues = errors(settings).toMutableList()
+        if (settings.wifiHost.isBlank()) {
+            issues += "wifiHost must not be blank when starting Wi-Fi microphone"
+        }
+        return issues
+    }
 }
 
 internal fun isIPv4Address(value: String): Boolean {

@@ -20,13 +20,13 @@ public struct AudioParameters: Codable, Equatable, Sendable {
 public enum Capabilities {
  public static let protocolVersion = 4
  public static let controlRevision = 1
- public static let runtimeRevision = 408
+ public static let runtimeRevision = 412
  public static let sampleRates = [16000, 44100, 48000, 96000]
  public static let channels = [1, 2]
  public static let maxFrameBytes = 262144
  public static let androidControlComponent = "com.zjx.usblinkmic/.AdbControlActivity"
  public static let legacyAndroidControlComponent = "com.zjx.usblinkmic/.MainActivity"
- public static let version = "4.0.7"
+ public static let version = "4.0.12"
 }
 public struct Settings: Codable, Equatable, Sendable {
  public var schemaVersion = 1

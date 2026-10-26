@@ -42,6 +42,14 @@ class MainActivity : ComponentActivity() {
   setContent { LinkMicScreen(Runtime.state.value, ::action) }
   receive(intent)
  }
+ override fun onStart() {
+  super.onStart()
+  Runtime.setAudioUiVisible(true)
+ }
+ override fun onStop() {
+  Runtime.setAudioUiVisible(false)
+  super.onStop()
+ }
  override fun onNewIntent(intent: Intent) {super.onNewIntent(intent);setIntent(intent);receive(intent)}
  override fun onSaveInstanceState(outState: Bundle) { pending?.let { outState.putString("pendingSession",it.session) };super.onSaveInstanceState(outState) }
  private fun whenResumed(request: Request, block: () -> Unit) {
@@ -55,29 +63,37 @@ class MainActivity : ComponentActivity() {
   val intent=Runtime.consumeAdbCommand(ticket) ?: run {Runtime.log("control","ticketRejected","命令票据已消费、过期或随进程重启失效");return}
   Runtime.log("control","ticketConsumed","已消费受保护入口的一次性票据")
   val mode=intent.getStringExtra("mode") ?: return
-  val session=intent.getStringExtra("session") ?: return
-  val token=intent.getStringExtra("token") ?: return
-  if(!token.matches(Regex("[a-fA-F0-9]{32}")) || session.isBlank() || session.length>64) {Runtime.log("control","invalidCommand","会话标识或凭据格式无效");return}
   if(mode=="cancel"){
-   val previous=Runtime.requests[session]
-   if(previous!=null && !java.security.MessageDigest.isEqual(previous.token.toByteArray(),token.toByteArray())){Runtime.log("control","cancelRejected","取消凭据与原会话不符");return}
-   if(previous!=null && java.security.MessageDigest.isEqual(previous.token.toByteArray(),token.toByteArray()))Runtime.stop(this,previous)
-   else if(previous==null)Runtime.cancelledSessions[session]=token
-   try {Runtime.beginControl(this,intent.getIntExtra("controlPort",48125))}catch(e: Exception){Runtime.log("control","cancelReceiptFailed",e.message ?: "控制通道不可用")}
-   Runtime.log("control","cancelReceived","已处理本次取消请求")
+   Runtime.handleAdbCancel(this,intent)
    return
   }
-  if(mode !in listOf("audio","vpn","ncm") || Runtime.cancelledSessions[session]==token) return
-  if(Runtime.requests.containsKey(session)) return
+  val session=intent.getStringExtra("session") ?: return
+  val token=intent.getStringExtra("token").orEmpty()
+  val validToken=if(mode=="wifi") (token.isEmpty() || token.matches(Regex("[a-fA-F0-9]{32}"))) else token.matches(Regex("[a-fA-F0-9]{32}"))
+  if(!validToken || session.isBlank() || session.length>64) {Runtime.log("control","invalidCommand","会话标识或凭据格式无效");return}
+  if(mode !in listOf("audio","vpn","ncm","wifi") || (token.isNotEmpty() && Runtime.cancelledSessions[session]==token)) return
+  if(mode=="wifi") {
+   Runtime.audioRequest?.let { Runtime.stop(this, it) }
+   Runtime.requests.remove("wifi")
+  } else if(Runtime.requests.containsKey(session)) return
   val audio=AudioParameters(intent.getIntExtra("rate",44100),intent.getIntExtra("channels",1),if(intent.getStringExtra("format")=="f32")PCMFormat.F32 else PCMFormat.I16,when(intent.getStringExtra("source")){"unprocessed"->RecordingSource.UNPROCESSED;"voiceRecognition"->RecordingSource.VOICE_RECOGNITION;else->RecordingSource.MICROPHONE})
-  val settings=Runtime.state.value.settings.copy(audio=audio,audioPort=intent.getIntExtra("port",48124),controlPort=intent.getIntExtra("controlPort",48125),pairingCode=token,dns=intent.getStringExtra("dns") ?: "1.1.1.1",routes=intent.getStringExtra("routes") ?: "0.0.0.0/0")
+  val wifiHost=intent.getStringExtra("wifiHost")?.trim().orEmpty().ifEmpty { Runtime.state.value.settings.wifiHost }
+  val settings=Runtime.state.value.settings.copy(audio=audio,wifiHost=wifiHost,audioPort=intent.getIntExtra("port",48124),controlPort=intent.getIntExtra("controlPort",48125),pairingCode=token,dns=intent.getStringExtra("dns") ?: "1.1.1.1",routes=intent.getStringExtra("routes") ?: "0.0.0.0/0")
   val request=Request(session,token,mode,settings)
   Runtime.requests[session]=request
   if(mode!="ncm" && pending!=null){Runtime.fail(request,"SYSTEM_PERMISSION_BUSY: 请先完成当前Android系统权限处理");return}
-  try {require(SettingsValidator.errors(settings).isEmpty());Runtime.beginControl(this,settings.controlPort)} catch(e:Exception){Runtime.fail(request,"CONTROL_CONFIG: ${e.message}");return}
+  try {
+   require(if(mode=="wifi") SettingsValidator.wifiStartErrors(settings).isEmpty() else SettingsValidator.errors(settings).isEmpty())
+   if(mode=="wifi") {
+    try { SettingsStore(this).save(settings) } catch(_: Exception) {}
+    Runtime.update { it.copy(settings=settings) }
+   } else {
+    Runtime.beginControl(this,settings.controlPort)
+   }
+  } catch(e:Exception){Runtime.fail(request,"CONTROL_CONFIG: ${e.message}");return}
   request.accepted=true
   Runtime.log(mode,"macStart","已接受Mac启动请求；不再要求应用内确认")
-  Runtime.update { if(mode=="ncm") it.copy(phoneInternet=ModuleStatus(TaskPhase.PREPARING,"正在准备USB共享")) else if(mode=="vpn") it.copy(macInternet=ModuleStatus(TaskPhase.PREPARING,"正在准备供网")) else it.copy(microphone=ModuleStatus(TaskPhase.PREPARING,"正在准备录音"),controlledByMac=true) }
+  Runtime.update { if(mode=="ncm") it.copy(phoneInternet=ModuleStatus(TaskPhase.PREPARING,"正在准备USB共享")) else if(mode=="vpn") it.copy(macInternet=ModuleStatus(TaskPhase.PREPARING,"正在准备供网")) else it.copy(microphone=ModuleStatus(TaskPhase.PREPARING,if(mode=="wifi") "正在连接 Mac Wi-Fi" else "正在准备录音"),controlledByMac=mode=="audio") }
   if(mode=="ncm") authorize(request)
   else {pending=request;whenResumed(request) {authorize(request)}}
  }
@@ -120,10 +136,20 @@ class MainActivity : ComponentActivity() {
   when(action){
    UserAction.StartWifi -> {
     if(pending!=null){Runtime.log("wifi","systemPermissionBusy","请先完成当前系统权限处理");return}
+    Runtime.audioRequest?.let { Runtime.stop(this, it) }
     val settings=Runtime.state.value.settings
-    val errors=SettingsValidator.errors(settings)
-    if(errors.isNotEmpty() || settings.wifiHost.isBlank() || !settings.pairingCode.matches(Regex("[a-fA-F0-9]{32}"))){Runtime.log("wifi","invalid",(errors+"填写Mac地址和32位配对码").joinToString("；"));return}
-    val request=Request("wifi",settings.pairingCode,"wifi",settings,accepted=true);Runtime.requests[request.session]=request;pending=request;whenResumed(request){authorize(request)}
+    val errors=SettingsValidator.wifiStartErrors(settings)
+    if(errors.isNotEmpty()){
+     val detail=errors.joinToString("；")
+     Runtime.log("wifi","invalid",detail)
+     Runtime.update { it.copy(microphone=ModuleStatus(TaskPhase.FAILED,"Wi-Fi 配置无效",detail,"INVALID_WIFI_SETTINGS"),controlledByMac=false) }
+     return
+    }
+    val request=Request("wifi",settings.pairingCode,"wifi",settings,accepted=true)
+    Runtime.requests[request.session]=request
+    Runtime.update { it.copy(microphone=ModuleStatus(TaskPhase.CONNECTING,"正在连接 Mac Wi-Fi","目标：${settings.wifiHost}:${settings.audioPort}"),controlledByMac=false) }
+    pending=request
+    whenResumed(request){authorize(request)}
    }
    UserAction.StopAudio -> (Runtime.audioRequest ?: pending?.takeIf { it.mode=="audio" || it.mode=="wifi" })?.let{Runtime.stop(this,it)}
    UserAction.StopVpn -> (Runtime.vpnRequest ?: pending?.takeIf { it.mode=="vpn" })?.let{Runtime.stop(this,it)}

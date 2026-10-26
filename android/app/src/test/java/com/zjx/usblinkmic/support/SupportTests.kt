@@ -5,15 +5,43 @@ import android.content.ContextWrapper
 import android.content.SharedPreferences
 import com.zjx.usblinkmic.contracts.AudioParameters
 import com.zjx.usblinkmic.contracts.Settings
+import com.zjx.usblinkmic.platform.CapabilityProvider
+import com.zjx.usblinkmic.platform.NcmShellCommand
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.Closeable
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class SupportTests {
     @Test
     fun defaultSettingsPassValidation() {
         assertTrue(SettingsValidator.errors(Settings()).isEmpty())
+    }
+
+    @Test
+    fun wifiStartValidatorAllowsOptionalEmptyPairingCodeAndRequiresWifiHost() {
+        val withoutHost = Settings(wifiHost = "", pairingCode = "")
+        assertTrue(SettingsValidator.wifiStartErrors(withoutHost).any { it.startsWith("wifiHost") })
+
+        val validWithoutPairingCode = Settings(wifiHost = "192.168.1.10", pairingCode = "")
+        assertTrue(SettingsValidator.wifiStartErrors(validWithoutPairingCode).isEmpty())
+
+        val validWithPairingCode = Settings(wifiHost = "192.168.1.10", pairingCode = "0123456789abcdef0123456789abcdef")
+        assertTrue(SettingsValidator.wifiStartErrors(validWithPairingCode).isEmpty())
+
+        val invalidPairingCode = Settings(wifiHost = "192.168.1.10", pairingCode = "short")
+        assertTrue(SettingsValidator.wifiStartErrors(invalidPairingCode).any { it.startsWith("pairingCode") })
     }
 
     @Test
@@ -90,6 +118,277 @@ class SupportTests {
         assertTrue(output.contains("serial=[REDACTED]"))
         assertTrue(output.contains("[IP]"))
         assertTrue(output.contains("[HOME]"))
+    }
+
+    @Test
+    fun socketWriteWatchdogUnblocksStalledLocalLoopbackWriteInBoundedTime() {
+        ServerSocket().use { server ->
+            server.reuseAddress = true
+            server.receiveBufferSize = 4096
+            server.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 1)
+            var acceptedPeer: Socket? = null
+            val acceptThread = Thread({
+                try {
+                    acceptedPeer = server.accept().apply { receiveBufferSize = 4096 }
+                } catch (_: Throwable) {
+                }
+            }, "stalled-peer-accept").apply {
+                isDaemon = true
+                start()
+            }
+
+            Socket().use { sender ->
+                sender.sendBufferSize = 4096
+                sender.connect(InetSocketAddress(InetAddress.getByName("127.0.0.1"), server.localPort), 1000)
+                sender.soTimeout = 200
+                SocketWriteWatchdog(
+                    target = sender,
+                    defaultTimeoutMs = 200L,
+                    checkIntervalMs = 25L
+                ).use { watchdog ->
+                    val chunk = ByteArray(65536)
+                    val startNs = System.nanoTime()
+                    var caught: Throwable? = null
+                    try {
+                        val out = sender.getOutputStream()
+                        for (i in 0 until 256) {
+                            watchdog.withWriteTimeout {
+                                out.write(chunk)
+                                out.flush()
+                            }
+                        }
+                    } catch (error: Throwable) {
+                        caught = error
+                    }
+                    val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs)
+                    assertTrue("Expected stalled socket write to throw, got null", caught is SocketTimeoutException)
+                    assertTrue("Expected watchdog to mark timeout", watchdog.didTimeOut())
+                    assertTrue("Expected stalled socket to be closed by watchdog", sender.isClosed)
+                    assertTrue("Expected stalled write to unblock in <1200ms, took ${elapsedMs}ms", elapsedMs < 1200L)
+                }
+            }
+            acceptThread.join(500L)
+            try { acceptedPeer?.close() } catch (_: Throwable) { }
+        }
+    }
+
+    @Test
+    fun socketWriteWatchdogDoesNotSpuriouslyCloseCompletedOrRepeatedWrites() {
+        val targetClosed = AtomicBoolean(false)
+        val target = Closeable { targetClosed.set(true) }
+        SocketWriteWatchdog(
+            target = target,
+            defaultTimeoutMs = 120L,
+            checkIntervalMs = 20L
+        ).use { watchdog ->
+            repeat(5) {
+                watchdog.withWriteTimeout {
+                    Thread.sleep(15L)
+                }
+            }
+            Thread.sleep(220L)
+            assertFalse("Completed writes must not trigger watchdog timeout during idle", watchdog.didTimeOut())
+            assertFalse("Target must remain open when all writes finish within deadline", targetClosed.get())
+        }
+    }
+
+    @Test
+    fun socketWriteWatchdogCloseCancelsPendingDeadlineAndIsolatesOldCaptureFromNewCapture() {
+        val oldSocketClosedByWatchdog = AtomicBoolean(false)
+        val newSocketClosedByWatchdog = AtomicBoolean(false)
+        val oldWatchdog = SocketWriteWatchdog(
+            target = Closeable { oldSocketClosedByWatchdog.set(true) },
+            defaultTimeoutMs = 100L,
+            checkIntervalMs = 20L
+        )
+        val newWatchdog = SocketWriteWatchdog(
+            target = Closeable { newSocketClosedByWatchdog.set(true) },
+            defaultTimeoutMs = 500L,
+            checkIntervalMs = 20L
+        )
+        try {
+            oldWatchdog.beginWrite(100L)
+            oldWatchdog.close()
+            newWatchdog.withWriteTimeout {
+                Thread.sleep(20L)
+            }
+            Thread.sleep(200L)
+            assertFalse("Closed old watchdog must not fire after cancellation", oldWatchdog.didTimeOut())
+            assertFalse("Closed old watchdog must not close target after close()", oldSocketClosedByWatchdog.get())
+            assertFalse("Old watchdog must never affect new capture's watchdog or socket", newWatchdog.didTimeOut())
+            assertFalse("New capture socket must remain open", newSocketClosedByWatchdog.get())
+        } finally {
+            oldWatchdog.close()
+            newWatchdog.close()
+        }
+    }
+
+    @Test
+    fun socketWriteWatchdogStaleCheckCannotCloseReplacementWriteOrClosedWatchdog() {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val calls = AtomicInteger()
+        val closes = AtomicInteger()
+        val timeouts = AtomicInteger()
+        val scheduler = ScheduledThreadPoolExecutor(1)
+        val guard = SocketWriteWatchdog(
+            target = Closeable { closes.incrementAndGet() },
+            defaultTimeoutMs = 1L,
+            checkIntervalMs = 60_000L,
+            clockNs = {
+                when (calls.incrementAndGet()) {
+                    1 -> 1L
+                    2 -> {
+                        entered.countDown()
+                        check(resume.await(2, TimeUnit.SECONDS)) { "fixture timeout" }
+                        2_000_001L
+                    }
+                    3 -> 3_000_001L
+                    else -> 5_000_001L
+                }
+            },
+            scheduler = scheduler,
+            onTimeout = { timeouts.incrementAndGet() }
+        )
+        try {
+            guard.beginWrite(1L)
+            val checker = Thread { guard.checkDeadline() }
+            checker.start()
+            assertTrue("Expected checker to enter clockNs", entered.await(1, TimeUnit.SECONDS))
+            guard.endWrite()
+            guard.beginWrite(1L)
+            resume.countDown()
+            checker.join(1_000L)
+
+            assertEquals("Stale deadline observation must not close replacement write", 0, closes.get())
+            assertEquals("Stale deadline observation must not invoke onTimeout", 0, timeouts.get())
+            assertFalse("Watchdog must not mark timedOut on stale check", guard.didTimeOut())
+            assertFalse("Watchdog must remain open for active replacement write", guard.isClosed())
+
+            // When the replacement write genuinely expires, checkDeadline trips once.
+            guard.checkDeadline()
+            guard.checkDeadline()
+            assertEquals(1, closes.get())
+            assertEquals(1, timeouts.get())
+            assertTrue(guard.didTimeOut())
+            assertTrue(guard.isClosed())
+        } finally {
+            guard.close()
+            scheduler.shutdownNow()
+        }
+
+        // Racing explicit close() while checkDeadline is in-flight must also prevent target close.
+        val enteredClose = CountDownLatch(1)
+        val resumeClose = CountDownLatch(1)
+        val closeCalls = AtomicInteger()
+        val closeTargetCount = AtomicInteger()
+        val closeTimeoutCount = AtomicInteger()
+        val scheduler2 = ScheduledThreadPoolExecutor(1)
+        val guard2 = SocketWriteWatchdog(
+            target = Closeable { closeTargetCount.incrementAndGet() },
+            defaultTimeoutMs = 1L,
+            checkIntervalMs = 60_000L,
+            clockNs = {
+                if (closeCalls.incrementAndGet() == 1) {
+                    1L
+                } else {
+                    enteredClose.countDown()
+                    check(resumeClose.await(2, TimeUnit.SECONDS)) { "fixture timeout" }
+                    2_000_001L
+                }
+            },
+            scheduler = scheduler2,
+            onTimeout = { closeTimeoutCount.incrementAndGet() }
+        )
+        try {
+            guard2.beginWrite(1L)
+            val checker2 = Thread { guard2.checkDeadline() }
+            checker2.start()
+            assertTrue(enteredClose.await(1, TimeUnit.SECONDS))
+            guard2.close()
+            resumeClose.countDown()
+            checker2.join(1_000L)
+            assertEquals("Explicit close() must prevent in-flight checkDeadline from closing target", 0, closeTargetCount.get())
+            assertEquals("Explicit close() must prevent in-flight checkDeadline from invoking onTimeout", 0, closeTimeoutCount.get())
+            assertFalse(guard2.didTimeOut())
+            assertTrue(guard2.isClosed())
+        } finally {
+            guard2.close()
+            scheduler2.shutdownNow()
+        }
+    }
+
+    @Test
+    fun capabilityProviderAllowsRootShellSystemAndSelfButDeniesOtherApps() {
+        val appUid = 10234
+        assertTrue(CapabilityProvider.isAllowedCallerUid(0, appUid))
+        assertTrue(CapabilityProvider.isAllowedCallerUid(2000, appUid))
+        assertTrue(CapabilityProvider.isAllowedCallerUid(1000, appUid))
+        assertTrue(CapabilityProvider.isAllowedCallerUid(appUid, appUid))
+        assertFalse(CapabilityProvider.isAllowedCallerUid(10235, appUid))
+        assertFalse(CapabilityProvider.isAllowedCallerUid(9999, appUid))
+        assertFalse(CapabilityProvider.isAllowedCallerUid(-1, appUid))
+    }
+
+    @Test
+    fun ncmShellCommandDropsRootToShellAndRejectsOrdinaryApps() {
+        val callOrder = mutableListOf<String>()
+        var currentUid = 0
+        var currentGid = 0
+        val rootOps = object : NcmShellCommand.IdentityOps {
+            override fun myUid(): Int = currentUid
+            override fun getuid(): Int = currentUid
+            override fun geteuid(): Int = currentUid
+            override fun getgid(): Int = currentGid
+            override fun getegid(): Int = currentGid
+            override fun setgid(gid: Int) {
+                check(currentUid == 0) { "setgid requires root before setuid drop" }
+                callOrder.add("setgid:$gid")
+                currentGid = gid
+            }
+            override fun setuid(uid: Int) {
+                callOrder.add("setuid:$uid")
+                currentUid = uid
+            }
+        }
+        NcmShellCommand.ensureShellProcessIdentity(rootOps)
+        assertEquals(listOf("setgid:2000", "setuid:2000"), callOrder)
+        assertEquals(2000, currentUid)
+        assertEquals(2000, currentGid)
+
+        // Already shell (2000) succeeds without setgid/setuid calls.
+        val shellCalls = mutableListOf<String>()
+        val shellOps = object : NcmShellCommand.IdentityOps {
+            override fun myUid(): Int = 2000
+            override fun getuid(): Int = 2000
+            override fun geteuid(): Int = 2000
+            override fun getgid(): Int = 2000
+            override fun getegid(): Int = 2000
+            override fun setgid(gid: Int) { shellCalls.add("setgid:$gid") }
+            override fun setuid(uid: Int) { shellCalls.add("setuid:$uid") }
+        }
+        NcmShellCommand.ensureShellProcessIdentity(shellOps)
+        assertTrue(shellCalls.isEmpty())
+
+        // Ordinary app caller (e.g. 10234) is rejected without attempting setgid/setuid.
+        val appCalls = mutableListOf<String>()
+        val appOps = object : NcmShellCommand.IdentityOps {
+            override fun myUid(): Int = 10234
+            override fun getuid(): Int = 10234
+            override fun geteuid(): Int = 10234
+            override fun getgid(): Int = 10234
+            override fun getegid(): Int = 10234
+            override fun setgid(gid: Int) { appCalls.add("setgid:$gid") }
+            override fun setuid(uid: Int) { appCalls.add("setuid:$uid") }
+        }
+        var appRejected = false
+        try {
+            NcmShellCommand.ensureShellProcessIdentity(appOps)
+        } catch (error: SecurityException) {
+            appRejected = error.message == "ADB_SHELL_REQUIRED"
+        }
+        assertTrue("Expected ordinary app UID to be rejected with ADB_SHELL_REQUIRED", appRejected)
+        assertTrue(appCalls.isEmpty())
     }
 }
 

@@ -239,6 +239,14 @@ public struct RootView: View {
 
             DevicePickerCard(snapshot: snapshot, send: send)
 
+            if snapshot.settings.transport == .wifi {
+                InfoCard(
+                    title: "Wi-Fi 麦克风模式已启用",
+                    detail: "音频端口：\(snapshot.settings.audioPort) · 配对码：\(snapshot.settings.pairingCode.isEmpty ? "未设置（手机端留空即可）" : snapshot.settings.pairingCode)。点击「开始」后 Mac 将监听局域网连接；若此时手机连接着 USB，会自动将本机局域网地址同步到手机。",
+                    symbol: "wifi"
+                )
+            }
+
             StatusCard(title: "麦克风任务", status: snapshot.microphone)
 
             HStack(spacing: 12) {
@@ -895,11 +903,11 @@ private struct SettingsSheet: View {
                     Toggle("静音输出", isOn: $settings.muted)
                 }
                 Section("连接") {
-                    TextField("监听 IPv4", text: $settings.listenAddress)
+                    TextField("监听 IPv4（Wi-Fi 下默认自动监听局域网）", text: $settings.listenAddress)
                     TextField("音频端口", value: $settings.audioPort, format: .number)
                     TextField("控制端口", value: $settings.controlPort, format: .number)
                     TextField("Wi-Fi 手机地址（可选）", text: $settings.wifiHost)
-                    TextField("配对码（可选）", text: $settings.pairingCode)
+                    TextField("配对码（可选，留空则免配对码）", text: $settings.pairingCode)
                 }
                 Section("网络共享") {
                     TextField("DNS IPv4", text: $settings.dns)
