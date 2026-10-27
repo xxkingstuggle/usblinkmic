@@ -8,9 +8,9 @@ data class AudioParameters(val sampleRate: Int = 44100, val channels: Int = 1, v
 object Capabilities {
  const val PROTOCOL_VERSION = 4
  const val CONTROL_REVISION = 1
- const val RUNTIME_REVISION = 413
+ const val RUNTIME_REVISION = 414
  const val CONTROL_COMPONENT = "com.zjx.usblinkmic/.AdbControlActivity"
- const val VERSION = "4.0.13"
+ const val VERSION = "4.0.14"
  val SAMPLE_RATES = listOf(16000, 44100, 48000, 96000)
  val CHANNELS = listOf(1, 2)
  const val MAX_FRAME_BYTES = 262144
