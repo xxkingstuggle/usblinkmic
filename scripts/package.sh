@@ -46,7 +46,7 @@ python3 - "$app" <<'PY'
 from pathlib import Path
 import sys,plistlib
 app=Path(sys.argv[1])
-p={'CFBundleExecutable':'USBLinkMic','CFBundleIdentifier':'com.zjx.usblinkmic.mac','CFBundleName':'USB LinkMic','CFBundleDisplayName':'USB LinkMic','CFBundlePackageType':'APPL','CFBundleShortVersionString':'4.0.12','CFBundleVersion':'40012','LSMinimumSystemVersion':'26.0','CFBundleIconFile':'AppIcon.icns','NSHighResolutionCapable':True,'NSLocalNetworkUsageDescription':'通过你选择的本地地址接收Android手机的Wi-Fi音频。'}
+p={'CFBundleExecutable':'USBLinkMic','CFBundleIdentifier':'com.zjx.usblinkmic.mac','CFBundleName':'USB LinkMic','CFBundleDisplayName':'USB LinkMic','CFBundlePackageType':'APPL','CFBundleShortVersionString':'4.0.13','CFBundleVersion':'40013','LSMinimumSystemVersion':'26.0','CFBundleIconFile':'AppIcon.icns','NSHighResolutionCapable':True,'NSLocalNetworkUsageDescription':'通过你选择的本地地址接收Android手机的Wi-Fi音频。'}
 (app/'Contents/Info.plist').write_bytes(plistlib.dumps(p))
 PY
 codesign --force --sign - "$app/Contents/Resources/platform-tools/adb"
