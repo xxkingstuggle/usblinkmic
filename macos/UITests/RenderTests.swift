@@ -2,14 +2,12 @@ import XCTest
 import SwiftUI
 import AppKit
 import Contracts
-import UI
+@testable import UI
 
 final class RenderTests: XCTestCase {
     @MainActor func testStoppedViewsRenderAtNarrowAndWideSizes() throws {
         _ = NSApplication.shared
-        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("artifacts/ui-renders")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = renderDirectory()
 
         for (width, height, appearance) in [
             (720, 520, NSAppearance.Name.aqua),
@@ -17,26 +15,104 @@ final class RenderTests: XCTestCase {
         ] {
             var snapshot = AppSnapshot()
             snapshot.wizardSkipped = true
+            snapshot.soundTestCompleted = true
             let view = NSHostingView(rootView: RootView(snapshot: snapshot, send: { _ in }))
             view.appearance = NSAppearance(named: appearance)
             view.frame = NSRect(x: 0, y: 0, width: width, height: height)
             view.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-            XCTAssertGreaterThan(png.count, 1000)
-            try png.write(to: root.appendingPathComponent("stopped-\(width)-\(appearance.rawValue).png"))
+            try write(view, to: root.appendingPathComponent("stopped-\(width)-\(appearance.rawValue).png"))
         }
     }
 
     @MainActor func testActiveStreamingAndMenuBarConsoleRender() throws {
         _ = NSApplication.shared
+        let root = renderDirectory()
+
+        let snapshot = activeSnapshot()
+
+        let mainView = NSHostingView(rootView: RootView(snapshot: snapshot, send: { _ in }))
+        mainView.appearance = NSAppearance(named: .darkAqua)
+        mainView.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+        mainView.layoutSubtreeIfNeeded()
+        try write(mainView, to: root.appendingPathComponent("streaming-1120-dark.png"))
+
+        let menuView = NSHostingView(rootView: MenuBarConsoleView(snapshot: snapshot, send: { _ in }))
+        menuView.appearance = NSAppearance(named: .darkAqua)
+        menuView.frame = NSRect(x: 0, y: 0, width: 340, height: 340)
+        menuView.layoutSubtreeIfNeeded()
+        try write(menuView, to: root.appendingPathComponent("menubar-336-dark.png"))
+    }
+
+    /// Renders every workspace in light and dark so layout regressions are visible,
+    /// not just the microphone screen.
+    @MainActor func testEveryWorkspaceRendersInLightAndDark() throws {
+        _ = NSApplication.shared
+        let root = renderDirectory()
+        let snapshot = activeSnapshot()
+
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for workspace in Workspace.allCases {
+                let view = NSHostingView(
+                    rootView: RootView(snapshot: snapshot, initialWorkspace: workspace, send: { _ in })
+                )
+                view.appearance = NSAppearance(named: appearance)
+                view.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+                view.layoutSubtreeIfNeeded()
+                let suffix = appearance == .aqua ? "light" : "dark"
+                try write(view, to: root.appendingPathComponent("workspace-\(workspace.rawValue)-\(suffix).png"))
+            }
+        }
+    }
+
+    /// Captures the settings sheet and onboarding wizard, which are sheets rather
+    /// than workspaces and would otherwise never be visually verified.
+    @MainActor func testSettingsSheetAndWizardRender() throws {
+        _ = NSApplication.shared
+        let root = renderDirectory()
+
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let suffix = appearance == .aqua ? "light" : "dark"
+
+            let sheet = NSHostingView(
+                rootView: SettingsSheet(
+                    settings: .constant(Contracts.Settings()),
+                    isDirty: .constant(false),
+                    outputs: [OutputDevice(id: "blackhole-2ch", name: "BlackHole 2ch", isVirtual: true)],
+                    onCancel: {},
+                    onSave: {}
+                )
+            )
+            sheet.appearance = NSAppearance(named: appearance)
+            sheet.frame = NSRect(x: 0, y: 0, width: 520, height: 580)
+            sheet.layoutSubtreeIfNeeded()
+            try write(sheet, to: root.appendingPathComponent("sheet-settings-\(suffix).png"))
+
+            var wizardSnapshot = AppSnapshot()
+            wizardSnapshot.devices = [Device(id: "8A2X1094F", name: "Pixel 9 Pro", state: .online)]
+            wizardSnapshot.selectedDeviceID = "8A2X1094F"
+            let wizard = NSHostingView(
+                rootView: SetupWizard(snapshot: wizardSnapshot, step: .constant(0), send: { _ in })
+            )
+            wizard.appearance = NSAppearance(named: appearance)
+            wizard.frame = NSRect(x: 0, y: 0, width: 520, height: 420)
+            wizard.layoutSubtreeIfNeeded()
+            try write(wizard, to: root.appendingPathComponent("sheet-wizard-\(suffix).png"))
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func renderDirectory() -> URL {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("artifacts/ui-renders")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
 
+    private func activeSnapshot() -> AppSnapshot {
         var snapshot = AppSnapshot()
         snapshot.wizardSkipped = true
+        snapshot.soundTestCompleted = true
         snapshot.devices = [Device(id: "8A2X1094F", name: "Pixel 9 Pro", state: .online)]
         snapshot.selectedDeviceID = "8A2X1094F"
         snapshot.microphone = ModuleStatus(phase: .running, stage: "有效音频传输", detail: "正在通过 USB 通道接收手机实时 PCM 音频流")
@@ -48,26 +124,16 @@ final class RenderTests: XCTestCase {
         ]
         snapshot.receivedFrames = 1842
         snapshot.settings.gain = 1.25
+        return snapshot
+    }
 
-        let mainView = NSHostingView(rootView: RootView(snapshot: snapshot, send: { _ in }))
-        mainView.appearance = NSAppearance(named: .darkAqua)
-        mainView.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
-        mainView.layoutSubtreeIfNeeded()
-        let mainBitmap = try XCTUnwrap(mainView.bitmapImageRepForCachingDisplay(in: mainView.bounds))
-        mainView.cacheDisplay(in: mainView.bounds, to: mainBitmap)
-        let mainPNG = try XCTUnwrap(mainBitmap.representation(using: .png, properties: [:]))
-        XCTAssertGreaterThan(mainPNG.count, 1000)
-        try mainPNG.write(to: root.appendingPathComponent("streaming-1120-dark.png"))
-
-        let menuView = NSHostingView(rootView: MenuBarConsoleView(snapshot: snapshot, send: { _ in }))
-        menuView.appearance = NSAppearance(named: .darkAqua)
-        menuView.frame = NSRect(x: 0, y: 0, width: 336, height: 310)
-        menuView.layoutSubtreeIfNeeded()
-        let menuBitmap = try XCTUnwrap(menuView.bitmapImageRepForCachingDisplay(in: menuView.bounds))
-        menuView.cacheDisplay(in: menuView.bounds, to: menuBitmap)
-        let menuPNG = try XCTUnwrap(menuBitmap.representation(using: .png, properties: [:]))
-        XCTAssertGreaterThan(menuPNG.count, 1000)
-        try menuPNG.write(to: root.appendingPathComponent("menubar-336-dark.png"))
+    @MainActor
+    private func write(_ view: NSHostingView<some View>, to url: URL) throws {
+        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        XCTAssertGreaterThan(png.count, 1000)
+        try png.write(to: url)
     }
 }
 

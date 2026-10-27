@@ -14,24 +14,26 @@ public struct MenuBarLabelView: View {
             return snapshot.settings.muted ? "mic.slash.fill" : "mic.fill"
         }
         if snapshot.phoneInternet.phase == .running {
-            return "personalhotspot"
+            return "arrow.left.arrow.right"
         }
         if snapshot.macInternet.phase == .running {
-            return "network"
+            return "globe"
         }
         if snapshot.microphone.phase == .failed
             || snapshot.phoneInternet.phase == .failed
             || snapshot.macInternet.phase == .failed {
             return "exclamationmark.triangle.fill"
         }
-        return "waveform.badge.mic"
+        return "mic"
     }
 
     public var body: some View {
         HStack(spacing: 4) {
             Image(systemName: iconName)
             if snapshot.microphone.phase == .running {
-                Text(snapshot.settings.muted ? "静音" : "\(Int((min(max(snapshot.level, 0), 1) * 100).rounded()))%")
+                let clamped = snapshot.level.isFinite ? max(min(snapshot.level, 1.0), 0.001) : 0.12
+                let db = max(-48.0, min(0.0, 20.0 * log10(clamped)))
+                Text(snapshot.settings.muted ? "静音" : String(format: "%.0fdB", db))
                     .font(.caption2.monospacedDigit())
             }
         }
@@ -39,6 +41,7 @@ public struct MenuBarLabelView: View {
 }
 
 public struct MenuBarConsoleView: View {
+    @Environment(\.colorScheme) private var colorScheme
     private let snapshot: AppSnapshot
     private let send: (UserAction) -> Void
     @Environment(\.openWindow) private var openWindow
@@ -48,185 +51,220 @@ public struct MenuBarConsoleView: View {
         self.send = send
     }
 
-    private var selectedDeviceText: String {
-        guard let id = snapshot.selectedDeviceID,
-              let device = snapshot.devices.first(where: { $0.id == id }) else {
-            return snapshot.devices.isEmpty ? "未连接手机" : "未选择手机"
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
+
+    private var deviceDisplayName: String {
+        if let id = snapshot.selectedDeviceID,
+           let device = snapshot.devices.first(where: { $0.id == id }) {
+            return device.name
         }
-        return "\(device.name) · \(device.state.shortLabel)"
+        if let first = snapshot.devices.first {
+            return first.name
+        }
+        return "等待手机连接"
     }
 
-    private var anyActiveTask: Bool {
-        snapshot.microphone.phase != .stopped
-            || snapshot.phoneInternet.phase != .stopped
-            || snapshot.macInternet.phase != .stopped
+    private var isMicRunning: Bool {
+        snapshot.microphone.phase == .running || snapshot.audioState == .streaming
+    }
+
+    private var isMicStopped: Bool {
+        snapshot.microphone.phase == .stopped || snapshot.microphone.phase == .failed
+    }
+
+    private var isPhoneNetRunning: Bool {
+        snapshot.phoneInternet.phase == .running
+    }
+
+    private var isMacNetRunning: Bool {
+        snapshot.macInternet.phase == .running
+    }
+
+    private var isAnyNetRunning: Bool {
+        isPhoneNetRunning || isMacNetRunning
+    }
+
+    private var outputShortName: String {
+        if let match = snapshot.outputs.first(where: { $0.id == snapshot.settings.outputUID }) {
+            return match.name
+        }
+        return "系统默认"
+    }
+
+    private var dbText: String {
+        let clamped = snapshot.level.isFinite ? max(min(snapshot.level, 1.0), 0.001) : 0.12
+        let db = max(-48.0, min(0.0, 20.0 * log10(clamped)))
+        return String(format: "%.1f dB", db)
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 11) {
             headerSection
-            microphoneQuickCard
-            networkQuickTiles
-            Divider()
-                .opacity(0.6)
+
+            microphoneCard
+
+            networkCard
+
+            Rectangle()
+                .fill(palette.divider)
+                .frame(height: 1)
+                .padding(.top, 2)
+
             footerBar
         }
-        .padding(14)
-        .frame(width: 336)
-        .background(.ultraThinMaterial)
+        .padding(16)
+        .frame(width: 340)
+        .background(palette.cardBackground)
     }
+
+    // MARK: - Header
 
     private var headerSection: some View {
-        HStack(spacing: 10) {
-            AppBrandIcon(size: 28)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("USB LinkMic")
-                    .font(.headline)
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(snapshot.devices.contains(where: { $0.state == .online }) ? Color.green : Color.secondary)
-                        .frame(width: 6, height: 6)
-                    Text(selectedDeviceText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+        VStack(alignment: .leading, spacing: 3) {
+            Text(isMicRunning ? "USB LinkMic · 拾音中" : "USB LinkMic")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(palette.textPrimary)
+
+            if isMicRunning {
+                Text("\(deviceDisplayName) · 正在传输")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(palette.accentBlue)
+            } else {
+                Text("\(deviceDisplayName) · \(snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi")")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.textSecondary)
             }
-            Spacer()
-            Button {
-                send(.refresh)
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.callout.weight(.medium))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("刷新设备与状态")
         }
     }
 
-    private var microphoneQuickCard: some View {
-        let isStopped = snapshot.microphone.phase == .stopped || snapshot.microphone.phase == .failed
-        let isStreaming = snapshot.audioState == .streaming
+    // MARK: - Microphone Quick Card
 
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("手机麦克风", systemImage: snapshot.settings.muted ? "mic.slash.fill" : "mic.fill")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(snapshot.microphone.phase == .running ? .primary : .secondary)
+    private var microphoneCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(isMicRunning ? "手机麦克风 · 采音中" : "手机麦克风")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+
+                    if !isMicRunning {
+                        Text(isMicStopped ? "随时就绪 · 未采音" : snapshot.microphone.stage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                }
+
                 Spacer()
-                StatusPill(
-                    label: snapshot.microphone.phase.label,
-                    tint: snapshot.microphone.phase.tint
-                )
+
+                ZenCapsuleActionButton(
+                    title: isMicStopped ? "开启" : "停止",
+                    isStop: !isMicStopped,
+                    width: 82,
+                    height: 32,
+                    isDisabled: snapshot.microphone.phase == .stopping || snapshot.isSavingSettings
+                ) {
+                    send(isMicStopped ? .start(.microphone) : .stop(.microphone))
+                }
+            }
+
+            if isMicRunning {
+                let bars = ZenWaveformWell.normalizedBars(from: snapshot.waveform, level: snapshot.level, targetCount: 20)
+                VStack(alignment: .trailing, spacing: 4) {
+                    HStack(alignment: .center, spacing: 7) {
+                        ForEach(Array(bars.enumerated()), id: \.offset) { idx, amp in
+                            Capsule()
+                                .fill(palette.waveBarBlue.opacity(idx.isMultiple(of: 3) ? 0.78 : 1.0))
+                                .frame(width: 4.5, height: max(6, CGFloat(amp) * 44))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 46)
+
+                    Text(dbText)
+                        .font(.system(size: 11, weight: .bold).monospacedDigit())
+                        .foregroundStyle(palette.accentBlue)
+                }
+            } else {
+                Text("输出：\(snapshot.settings.purpose == .monitor ? "本机试听" : "虚拟麦克风") (\(outputShortName))")
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(isMicRunning ? palette.recessedWell : palette.windowBackground)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isMicRunning ? palette.activeBorder : palette.border, lineWidth: 1)
+        }
+    }
+
+    // MARK: - Network Quick Card
+
+    private var networkCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(isAnyNetRunning ? (isPhoneNetRunning ? "手机网络给 Mac" : "Mac 网络给手机") : "网络共享")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+
+                    if isAnyNetRunning {
+                        Text(isPhoneNetRunning ? "NCM 链路已激活" : "USB 隧道已连通")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(palette.accentBlue)
+                    } else {
+                        Text("未启用 · 点击开启供网")
+                            .font(.system(size: 12))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                }
+
+                Spacer()
+
                 Button {
-                    send(isStopped ? .start(.microphone) : .stop(.microphone))
+                    if isPhoneNetRunning {
+                        send(.stop(.phoneInternet))
+                    } else if isMacNetRunning {
+                        send(.stop(.macInternet))
+                    } else {
+                        send(.start(.phoneInternet))
+                    }
                 } label: {
-                    Text(isStopped ? "开启" : "停止")
-                        .font(.caption.weight(.semibold))
+                    Text(isAnyNetRunning ? "断开" : "共享")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isAnyNetRunning ? palette.stopCrimson : palette.textPrimary)
+                        .frame(width: 76, height: 32)
+                        .background(
+                            Capsule()
+                                .fill(palette.cardBackground)
+                        )
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(palette.border, lineWidth: 1)
+                        }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(isStopped ? .accentColor : .red)
-                .controlSize(.small)
-                .disabled(snapshot.microphone.phase == .stopping || snapshot.isSavingSettings)
+                .buttonStyle(.plain)
             }
 
-            StudioLevelMeter(
-                level: snapshot.level,
-                isStreaming: isStreaming,
-                isMuted: snapshot.settings.muted
-            )
-
-            HStack(spacing: 8) {
-                Button {
-                    send(.setMuted(!snapshot.settings.muted))
-                } label: {
-                    Image(systemName: snapshot.settings.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .foregroundStyle(snapshot.settings.muted ? .orange : .secondary)
-                        .frame(width: 18)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(snapshot.settings.muted ? "取消静音" : "静音输出")
-
-                Slider(
-                    value: Binding(
-                        get: { snapshot.settings.gain },
-                        set: { send(.setGain($0)) }
-                    ),
-                    in: 0...4
-                )
-                .controlSize(.small)
-
-                Text("\(snapshot.settings.gain, format: .number.precision(.fractionLength(1)))×")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, alignment: .trailing)
-            }
+            Text(isAnyNetRunning ? "已连接 · USB NCM" : "模式：USB NCM 互联")
+                .font(.system(size: 11))
+                .foregroundStyle(palette.textSecondary)
         }
-        .padding(12)
-        .insetGroupSurface(cornerRadius: 12)
-    }
-
-    private var networkQuickTiles: some View {
-        HStack(spacing: 8) {
-            networkTile(
-                title: "手机供网",
-                subtitle: snapshot.phoneInternet.phase.label,
-                symbol: "personalhotspot",
-                status: snapshot.phoneInternet,
-                workspace: .phoneInternet
-            )
-            networkTile(
-                title: "反向供网",
-                subtitle: snapshot.macInternet.phase.label,
-                symbol: "network",
-                status: snapshot.macInternet,
-                workspace: .macInternet
-            )
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(palette.windowBackground)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(palette.border, lineWidth: 1)
         }
     }
 
-    private func networkTile(
-        title: String,
-        subtitle: String,
-        symbol: String,
-        status: ModuleStatus,
-        workspace: Workspace
-    ) -> some View {
-        let isStopped = status.phase == .stopped || status.phase == .failed
-        let isActive = status.phase == .running
-
-        return Button {
-            send(isStopped ? .start(workspace) : .stop(workspace))
-        } label: {
-            HStack(spacing: 9) {
-                ZStack {
-                    Circle()
-                        .fill(isActive ? Color.accentColor : Color.primary.opacity(0.08))
-                        .frame(width: 30, height: 30)
-                    Image(systemName: symbol)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isActive ? .white : status.phase.tint)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(status.phase.tint)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity)
-            .insetGroupSurface(cornerRadius: 10)
-        }
-        .buttonStyle(.plain)
-        .disabled(status.phase == .stopping)
-    }
+    // MARK: - Footer Bar
 
     private var footerBar: some View {
         HStack {
@@ -234,31 +272,37 @@ public struct MenuBarConsoleView: View {
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
             } label: {
-                Label("打开主窗口", systemImage: "macwindow")
-                    .font(.caption.weight(.medium))
+                Text("打开主窗口")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.accentBlue)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
 
             Spacer()
 
-            if anyActiveTask {
-                Button(role: .destructive) {
-                    send(.stopAll)
-                } label: {
-                    Label("全部停止", systemImage: "stop.circle")
-                        .font(.caption.weight(.medium))
+            Button {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openWindow(id: "main")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    NotificationCenter.default.post(name: Notification.Name("USBLinkMic.showSettings"), object: nil)
                 }
-                .buttonStyle(.borderless)
+            } label: {
+                Text("偏好设置... (⌘,)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.textSecondary)
             }
+            .buttonStyle(.plain)
+
+            Spacer()
 
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Text("退出")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.textSecondary)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
         }
     }
 }

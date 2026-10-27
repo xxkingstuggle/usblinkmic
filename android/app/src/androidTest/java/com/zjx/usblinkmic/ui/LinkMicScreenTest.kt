@@ -1,7 +1,6 @@
 package com.zjx.usblinkmic.ui
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -41,15 +40,17 @@ class LinkMicScreenTest {
         }
 
         composeRule.onNodeWithText("Wi-Fi 麦克风").assertExists()
+        composeRule.onNodeWithText("等待手机确认").assertExists()
+
+        composeRule.onNodeWithText("网络共享").performClick()
         composeRule.onNodeWithText("手机网络给 Mac").assertExists()
         composeRule.onNodeWithText("Mac 网络给手机").assertExists()
-        composeRule.onNodeWithText("等待手机确认").assertExists()
         composeRule.onNodeWithText("出口验证中").assertExists()
         composeRule.onNodeWithText("隧道失败").assertExists()
     }
 
     @Test
-    fun microphoneSwitchEmitsStopWithoutChangingSnapshot() {
+    fun microphoneStartStopControlEmitsStopWithoutChangingSnapshot() {
         val snapshot = AppSnapshot(
             microphone = ModuleStatus(TaskPhase.RUNNING, "正在接收", "收到真实帧"),
             settings = Settings(wifiHost = "192.168.1.10"),
@@ -62,9 +63,7 @@ class LinkMicScreenTest {
             }
         }
 
-        composeRule.onNodeWithContentDescription("Wi-Fi 麦克风开关")
-            .assertIsOn()
-            .performClick()
+        composeRule.onNodeWithContentDescription("Wi-Fi 麦克风开关").performClick()
 
         composeRule.runOnIdle {
             assertEquals(UserAction.StopAudio, action)
@@ -83,7 +82,7 @@ class LinkMicScreenTest {
             }
         }
 
-        composeRule.onNodeWithText("设置").performClick()
+        composeRule.onNodeWithText("设置与诊断").performClick()
         composeRule.onNodeWithTag("wifi-host").performTextReplacement("192.168.1.10")
         composeRule.onNodeWithTag("pairing-code")
             .performTextReplacement("0123456789abcdef0123456789abcdef")

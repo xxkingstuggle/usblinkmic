@@ -417,7 +417,13 @@ class MicrophoneService : Service() {
         val stopIntent = Intent(this, MicrophoneService::class.java).setAction("STOP").putExtra("session", currentRequest.session)
         var captureThread: Thread? = null
         try {
-            startForeground(10, Notifications.create(this, "USB LinkMic正在采音", stopIntent))
+            startForeground(10, Notifications.create(
+                this,
+                "USB LinkMic · 正在采音",
+                stopIntent,
+                subtitle = "麦克风正向 Mac 传输音频 · 点按查看状态或停止",
+                stopLabel = "停止采音",
+            ))
             captureThread = Thread({ capture(capture, startId) }, "linkmic-capture").apply { isDaemon = true }
             check(capture.markWorkerStarted()) { "CAPTURE_STOPPED_BEFORE_START" }
             captureThread.start()

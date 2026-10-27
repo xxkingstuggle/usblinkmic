@@ -2,319 +2,273 @@ import SwiftUI
 import Contracts
 
 struct NetworkWorkspaceView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let workspace: Workspace
     let snapshot: AppSnapshot
     let send: (UserAction) -> Void
     let onOpenSettings: () -> Void
 
-    private var status: ModuleStatus {
-        workspace == .phoneInternet ? snapshot.phoneInternet : snapshot.macInternet
-    }
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
 
-    private var effectiveNetworkState: NetworkState {
-        status.phase == .stopped ? .stopped : snapshot.networkState
-    }
-
-    private var isStoppedOrFailed: Bool {
-        status.phase == .stopped || status.phase == .failed
-    }
-
-    private var pipelineSteps: [String] {
-        if workspace == .phoneInternet {
-            return ["USB 能力检查", "NCM 共享激活", "DHCP 地址分配", "Mac 出口就绪"]
-        } else {
-            return ["本地转发启动", "手机 VPN 授权", "隧道接口建立", "手机出口就绪"]
+    private var deviceDisplayName: String {
+        if let id = snapshot.selectedDeviceID,
+           let device = snapshot.devices.first(where: { $0.id == id }) {
+            return device.name
         }
-    }
-
-    private var activeStepIndex: Int {
-        switch status.phase {
-        case .stopped:
-            return -1
-        case .checking:
-            return 0
-        case .preparing, .waitingUser:
-            return 1
-        case .connecting:
-            return effectiveNetworkState == .addressed || effectiveNetworkState == .verifying ? 2 : 1
-        case .running:
-            return 3
-        case .stopping:
-            return 1
-        case .failed:
-            return 0
+        if let first = snapshot.devices.first {
+            return first.name
         }
+        return "Android 手机"
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                heroNetworkCard
-                linkDetailsSection
-                if workspace == .macInternet {
-                    vpnAndRoutingSection
+            VStack(alignment: .leading, spacing: 24) {
+                ZenWorkspaceHeroHeader(
+                    eyebrow: "网络共享",
+                    title: "高速有线互联",
+                    subtitle: "通过原生 USB NCM 虚拟网卡通道，免安装驱动实现低延迟、零干扰的双向网络共享。"
+                )
+
+                if workspace == .phoneInternet {
+                    phoneToMacCard
+                    macToPhoneCard
                 } else {
-                    ncmProtectionSection
+                    macToPhoneCard
+                    phoneToMacCard
                 }
+
                 if !snapshot.recoveryMessage.isEmpty {
-                    recoverySection
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.shield")
+                            .font(.system(size: 12))
+                            .foregroundStyle(palette.textSecondary)
+                        Text("会话安全恢复：\(snapshot.recoveryMessage)")
+                            .font(.system(size: 12))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                    .padding(.horizontal, 4)
                 }
             }
-            .frame(maxWidth: 880, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .top)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            .frame(maxWidth: 816, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 40)
+            .padding(.vertical, 30)
         }
     }
 
-    // MARK: - Hero Network Card
+    // MARK: - Card 1: 手机网络提供给 Mac (USB NCM)
 
-    private var heroNetworkCard: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            HStack(alignment: .top, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .fill(status.phase.tint.opacity(0.15))
-                        .frame(width: 46, height: 46)
-                    Image(systemName: workspace.symbol)
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(status.phase.tint)
-                        .symbolRenderingMode(.hierarchical)
+    private var phoneToMacCard: some View {
+        let status = snapshot.phoneInternet
+        let isRunning = status.phase == .running
+        let isStoppedOrFailed = status.phase == .stopped || status.phase == .failed
+        let stepIndex = activeStepIndex(for: status)
+
+        let subtitleText: String = if isRunning {
+            "Mac 正在通过 \(deviceDisplayName) 共享的手机网络上网"
+        } else if !status.detail.isEmpty && status.phase != .stopped {
+            status.detail
+        } else {
+            "通过 Android 原生 USB NCM 虚拟网卡将手机蜂窝数据或 Wi-Fi 共享给 Mac"
+        }
+
+        return VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("手机网络提供给 Mac (USB NCM)")
+                        .font(.system(size: 19, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+
+                    Text(subtitleText)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(palette.textSecondary)
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(status.stage.isEmpty ? status.phase.label : status.stage)
-                            .font(.title3.weight(.semibold))
-                        StatusPill(
-                            label: status.phase.label,
-                            symbol: status.phase.symbol,
-                            tint: status.phase.tint
-                        )
-                        StatusPill(
-                            label: effectiveNetworkState.label,
-                            symbol: effectiveNetworkState.symbol,
-                            tint: effectiveNetworkState.tint
-                        )
-                    }
+                Spacer(minLength: 16)
 
-                    Text(
-                        status.detail.isEmpty
-                            ? workspace.subtitle
-                            : status.detail
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                ZenCapsuleActionButton(
+                    title: isStoppedOrFailed ? "开启供网" : "停止供网",
+                    isStop: !isStoppedOrFailed,
+                    width: 138,
+                    height: 44,
+                    isDisabled: status.phase == .stopping
+                ) {
+                    send(isStoppedOrFailed ? .start(.phoneInternet) : .stop(.phoneInternet))
                 }
-
-                Spacer(minLength: 12)
-
-                Button {
-                    send(isStoppedOrFailed ? .start(workspace) : .stop(workspace))
-                } label: {
-                    Label(
-                        isStoppedOrFailed ? "开始共享" : "停止共享",
-                        systemImage: isStoppedOrFailed ? "play.fill" : "stop.fill"
-                    )
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 6)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(isStoppedOrFailed ? .accentColor : .red)
-                .controlSize(.large)
-                .disabled(status.phase == .stopping)
             }
 
-            Divider()
-                .opacity(0.55)
+            if isRunning || isTaskBusy(status.phase) {
+                linkStateWell(
+                    primaryText: isRunning ? "NCM 链路已激活" : status.stage,
+                    secondaryText: isRunning ? "手机网络出口已就绪" : "正在协商 USB 共享接口"
+                )
+            } else {
+                Rectangle()
+                    .fill(palette.divider)
+                    .frame(height: 1)
+            }
 
-            // 4-Stage Pipeline Stepper
-            HStack(spacing: 8) {
-                ForEach(Array(pipelineSteps.enumerated()), id: \.offset) { index, title in
-                    pipelineStepBadge(index: index, title: title)
-                    if index < pipelineSteps.count - 1 {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.tertiary)
+            HStack(spacing: 0) {
+                let steps = ["① USB 就绪", "② NCM 激活", "③ DHCP 分配", "④ 出口连通"]
+                ForEach(Array(steps.enumerated()), id: \.offset) { idx, label in
+                    let isHighlighted = (isRunning && idx == 3) || (!isRunning && stepIndex == idx)
+                    Text(label)
+                        .font(.system(size: 12, weight: isHighlighted ? .bold : .regular))
+                        .foregroundStyle(isHighlighted ? palette.accentBlue : palette.textSecondary)
+                    if idx < steps.count - 1 {
+                        Spacer()
                     }
                 }
             }
 
             if let errorCode = status.errorCode, !errorCode.isEmpty {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("错误代码：\(errorCode)")
-                            .font(.callout.weight(.semibold))
-                        Text(status.detail.isEmpty ? "请前往「诊断日志」查看详细失败阶段与恢复建议。" : status.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(12)
-                .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Text("错误代码：\(errorCode) · \(status.detail)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(palette.stopCrimson)
             }
         }
-        .padding(18)
-        .heroGlassSurface(tint: status.phase.tint)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 24)
+        .zenCard(isActive: isRunning, cornerRadius: 20)
     }
 
-    private func pipelineStepBadge(index: Int, title: String) -> some View {
-        let isCompleted = status.phase == .running || (activeStepIndex > index && status.phase != .failed)
-        let isCurrent = activeStepIndex == index && status.phase != .stopped && status.phase != .running
-        let isFailed = status.phase == .failed && activeStepIndex == index
+    // MARK: - Card 2: Mac 网络共享给手机 (反向代理 / VPN)
 
-        let tint: Color = if isFailed {
-            .red
-        } else if isCompleted {
-            .green
-        } else if isCurrent {
-            .blue
+    private var macToPhoneCard: some View {
+        let status = snapshot.macInternet
+        let isRunning = status.phase == .running
+        let isStoppedOrFailed = status.phase == .stopped || status.phase == .failed
+
+        let subtitleText: String = if isRunning {
+            "正在将 Mac 有线/Wi-Fi 宽带通过 USB 隧道高速转发至 \(deviceDisplayName)"
+        } else if !status.detail.isEmpty && status.phase != .stopped {
+            status.detail
         } else {
-            .secondary
+            "将 Mac 的 Wi-Fi 或有线宽带通过 USB 隧道提供给 Android 手机使用"
         }
 
-        let symbol: String = if isFailed {
-            "xmark.circle.fill"
-        } else if isCompleted {
-            "checkmark.circle.fill"
-        } else if isCurrent {
-            "circle.dotted.circle.fill"
-        } else {
-            "\(index + 1).circle"
-        }
+        return VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Mac 网络共享给手机 (反向代理 / VPN)")
+                        .font(.system(size: 19, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
 
-        return HStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint)
-            Text(title)
-                .font(.caption.weight(isCurrent || isCompleted ? .semibold : .regular))
-                .foregroundStyle(isCurrent || isCompleted ? .primary : .secondary)
-                .lineLimit(1)
+                    Text(subtitleText)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(palette.textSecondary)
+                }
+
+                Spacer(minLength: 16)
+
+                ZenCapsuleActionButton(
+                    title: isStoppedOrFailed ? "开启供网" : "停止供网",
+                    isStop: !isStoppedOrFailed,
+                    width: 138,
+                    height: 44,
+                    isDisabled: status.phase == .stopping
+                ) {
+                    send(isStoppedOrFailed ? .start(.macInternet) : .stop(.macInternet))
+                }
+            }
+
+            if isRunning || isTaskBusy(status.phase) {
+                linkStateWell(
+                    primaryText: isRunning ? "USB 隧道已连通" : status.stage,
+                    secondaryText: isRunning ? "手机端已获得 Mac 网络出口" : "正在建立 VPN 隧道"
+                )
+            }
+
+            Rectangle()
+                .fill(palette.divider)
+                .frame(height: 1)
+
+            HStack(alignment: .center) {
+                HStack(spacing: 8) {
+                    Text("DNS 配置")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textSecondary)
+                    Button(action: onOpenSettings) {
+                        Text("\(snapshot.settings.dns) (自动)")
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(palette.textPrimary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    Text("路由网段")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textSecondary)
+                    Button(action: onOpenSettings) {
+                        Text("\(snapshot.settings.routes) (全局代理)")
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(palette.textPrimary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    Text("手机状态")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textSecondary)
+                    Text("VPN 权限\(snapshot.vpnPermission.label)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(palette.emeraldGreen)
+                }
+            }
+
+            if let errorCode = status.errorCode, !errorCode.isEmpty {
+                Text("错误代码：\(errorCode) · \(status.detail)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(palette.stopCrimson)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 24)
+        .zenCard(isActive: isRunning, cornerRadius: 20)
+    }
+
+    // MARK: - Link State Well (real state only, no fabricated throughput)
+
+    private func linkStateWell(primaryText: String, secondaryText: String) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(palette.emeraldGreen)
+                .frame(width: 7, height: 7)
+
+            Text(primaryText)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(palette.textPrimary)
+
+            Text(secondaryText)
+                .font(.system(size: 12))
+                .foregroundStyle(palette.textSecondary)
+
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 54)
         .background(
-            tint.opacity(isCurrent || isCompleted || isFailed ? 0.12 : 0.05),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(palette.recessedWell)
         )
     }
 
-    // MARK: - Grouped Details Sections
-
-    private var linkDetailsSection: some View {
-        NativeGroupedSection("链路状态与说明") {
-            NativeSettingRow(
-                title: "当前任务阶段",
-                subtitle: status.detail.isEmpty ? "展示当前网络共享握手与恢复进度" : status.detail,
-                symbol: "bolt.horizontal.fill",
-                symbolTint: status.phase.tint
-            ) {
-                StatusPill(
-                    label: status.stage.isEmpty ? status.phase.label : status.stage,
-                    tint: status.phase.tint
-                )
-            }
-
-            NativeSettingRow(
-                title: "网络通道可用性",
-                subtitle: effectiveNetworkState.explanation,
-                symbol: effectiveNetworkState.symbol,
-                symbolTint: effectiveNetworkState.tint,
-                showDivider: false
-            ) {
-                StatusPill(
-                    label: effectiveNetworkState.label,
-                    symbol: effectiveNetworkState.symbol,
-                    tint: effectiveNetworkState.tint
-                )
-            }
-        }
-    }
-
-    private var vpnAndRoutingSection: some View {
-        NativeGroupedSection("VPN 授权与路由配置") {
-            NativeSettingRow(
-                title: "手机端 VPN 隧道授权",
-                subtitle: "首次启动时需在手机系统弹窗中确认 VPN 连接请求",
-                symbol: "lock.shield.fill",
-                symbolTint: snapshot.vpnPermission.tint
-            ) {
-                StatusPill(
-                    label: snapshot.vpnPermission.label,
-                    symbol: snapshot.vpnPermission.symbol,
-                    tint: snapshot.vpnPermission.tint
-                )
-            }
-
-            NativeSettingRow(
-                title: "DNS 服务器 IPv4",
-                subtitle: "下发给手机 VPN 接口的解析服务器地址",
-                symbol: "server.rack",
-                symbolTint: .blue
-            ) {
-                Text(snapshot.settings.dns)
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            NativeSettingRow(
-                title: "转发路由 CIDR",
-                subtitle: "控制哪些 IPv4 网段经由 Mac 网络出口转发",
-                symbol: "point.3.connected.trianglepath.dotted",
-                symbolTint: .indigo,
-                showDivider: false
-            ) {
-                HStack(spacing: 8) {
-                    Text(snapshot.settings.routes)
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                    Button("路由设置…", action: onOpenSettings)
-                        .controlSize(.small)
-                }
-            }
-        }
-    }
-
-    private var ncmProtectionSection: some View {
-        NativeGroupedSection("USB NCM 共享与恢复保护") {
-            NativeSettingRow(
-                title: "物理传输接口",
-                subtitle: "通过 Android 11+ 原生 USB NCM 协议建立虚拟以太网 (usb0)",
-                symbol: "cable.connector.horizontal",
-                symbolTint: .teal
-            ) {
-                ParameterTag("USB NCM")
-            }
-
-            NativeSettingRow(
-                title: "安全恢复边界",
-                subtitle: "停止或退出时仅恢复本次会话修改的 USB 模式与 Mac 网络服务，不改动其他网络顺序",
-                symbol: "checkmark.shield.fill",
-                symbolTint: .green,
-                showDivider: false
-            ) {
-                StatusPill(label: "自动恢复已启用", tint: .green)
-            }
-        }
-    }
-
-    private var recoverySection: some View {
-        NativeGroupedSection("会话恢复记录") {
-            NativeSettingRow(
-                title: "上次会话清理状态",
-                subtitle: snapshot.recoveryMessage,
-                symbol: "arrow.uturn.backward.circle.fill",
-                symbolTint: .orange,
-                showDivider: false
-            ) {
-                EmptyView()
-            }
+    private func activeStepIndex(for status: ModuleStatus) -> Int {
+        switch status.phase {
+        case .stopped: return -1
+        case .checking: return 0
+        case .preparing, .waitingUser: return 1
+        case .connecting: return 2
+        case .running: return 3
+        case .stopping: return 1
+        case .failed: return 0
         }
     }
 }

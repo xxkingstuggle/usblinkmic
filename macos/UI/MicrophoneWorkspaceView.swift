@@ -2,343 +2,430 @@ import SwiftUI
 import Contracts
 
 struct MicrophoneWorkspaceView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let snapshot: AppSnapshot
     let send: (UserAction) -> Void
     let onOpenSettings: () -> Void
 
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
     private var status: ModuleStatus { snapshot.microphone }
     private var isStoppedOrFailed: Bool { status.phase == .stopped || status.phase == .failed }
-    private var isStreaming: Bool { snapshot.audioState == .streaming }
+    private var isRunning: Bool { status.phase == .running || snapshot.audioState == .streaming }
 
-    private var boundedLevel: Double {
-        guard snapshot.level.isFinite else { return 0 }
-        return min(max(snapshot.level, 0), 1)
+    private var deviceDisplayName: String {
+        if let id = snapshot.selectedDeviceID,
+           let device = snapshot.devices.first(where: { $0.id == id }) {
+            return device.name
+        }
+        if let first = snapshot.devices.first {
+            return first.name
+        }
+        return "Android 手机"
     }
 
-    private var selectedOutputName: String {
-        if snapshot.settings.outputUID == "default" {
-            return "系统默认输出设备"
+    private var effectiveAudio: AudioParameters {
+        snapshot.effectiveAudio ?? snapshot.settings.audio
+    }
+
+    private var sampleRateKhzText: String {
+        let rate = Double(effectiveAudio.sampleRate) / 1000.0
+        if effectiveAudio.sampleRate % 1000 == 0 {
+            return "\(effectiveAudio.sampleRate / 1000) kHz"
         }
-        return snapshot.outputs.first(where: { $0.id == snapshot.settings.outputUID })?.name
-            ?? "已选设备暂不可用 (\(snapshot.settings.outputUID))"
+        return String(format: "%.1f kHz", rate)
+    }
+
+    private var effectiveChannelsLabel: String {
+        effectiveAudio.channels == 1 ? "单声道 1ch" : "立体声 2ch"
+    }
+
+    private var selectedOutputShortName: String {
+        if let match = snapshot.outputs.first(where: { $0.id == snapshot.settings.outputUID }) {
+            return match.name
+        }
+        if snapshot.settings.outputUID == "default" {
+            return snapshot.outputs.first(where: { $0.isVirtual })?.name ?? "系统默认声卡"
+        }
+        return snapshot.settings.outputUID
+    }
+
+    private var heroTitle: String {
+        if isRunning {
+            return "正在向 Mac 传输音频"
+        }
+        if isTaskBusy(status.phase) {
+            return status.stage.isEmpty ? status.phase.label : status.stage
+        }
+        if status.phase == .failed {
+            return status.stage.isEmpty ? "音频连接异常" : status.stage
+        }
+        return "随时就绪"
+    }
+
+    private var heroSubtitle: String {
+        if isRunning {
+            return snapshot.receivedFrames == 0
+                ? "等待手机端首帧音频…"
+                : "音频流稳定推送中 · 累计接收 \(snapshot.receivedFrames.formatted()) 帧"
+        }
+        if !status.detail.isEmpty && status.phase != .stopped {
+            return status.detail
+        }
+        let channelName = snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi 局域网"
+        return "通过 \(channelName) 传输手机麦克风信号至 Mac，支持耳机实时试听或作为会议虚拟麦克风。"
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                heroConsoleCard
-                realtimeAudioControlSection
-                transportAndDeviceSection
+            VStack(alignment: .leading, spacing: 24) {
+                ZenWorkspaceHeroHeader(
+                    eyebrow: "麦克风输入",
+                    title: heroTitle,
+                    subtitle: heroSubtitle
+                )
+
+                heroMicrophoneCard
+
+                quickTuningSection
             }
-            .frame(maxWidth: 880, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .top)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            .frame(maxWidth: 816, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 40)
+            .padding(.vertical, 30)
         }
     }
 
-    // MARK: - Studio Hero Console Card
+    // MARK: - Hero Card ("静如止水" vs "动如雷霆")
 
-    private var heroConsoleCard: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            HStack(alignment: .top, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .fill(status.phase.tint.opacity(0.15))
-                        .frame(width: 46, height: 46)
-                    Image(systemName: snapshot.settings.muted ? "mic.slash.fill" : "mic.fill")
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(snapshot.settings.muted ? .orange : status.phase.tint)
-                        .symbolRenderingMode(.hierarchical)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(status.stage.isEmpty ? status.phase.label : status.stage)
-                            .font(.title3.weight(.semibold))
-                        StatusPill(
-                            label: snapshot.audioState.label,
-                            symbol: isStreaming ? "waveform" : nil,
-                            tint: snapshot.audioState.tint
-                        )
-                        if snapshot.settings.muted {
-                            StatusPill(
-                                label: "Mac 输出已静音",
-                                symbol: "speaker.slash.fill",
-                                tint: .orange
-                            )
-                        }
-                    }
-
-                    Text(
-                        status.detail.isEmpty
-                            ? "将 Android 手机作为低延迟麦克风接入 Mac，支持耳机实时试听或通过虚拟声卡送入会议软件。"
-                            : status.detail
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 12)
-
-                VStack(alignment: .trailing, spacing: 5) {
-                    Button {
-                        send(isStoppedOrFailed ? .start(.microphone) : .stop(.microphone))
-                    } label: {
-                        Label(
-                            isStoppedOrFailed ? "开始拾音" : "停止拾音",
-                            systemImage: isStoppedOrFailed ? "play.fill" : "stop.fill"
-                        )
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 6)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(isStoppedOrFailed ? .accentColor : .red)
-                    .controlSize(.large)
-                    .disabled(status.phase == .stopping || snapshot.isSavingSettings)
-
-                    if !snapshot.settingsMessage.isEmpty {
-                        Text(snapshot.settingsMessage)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-
-            Divider()
-                .opacity(0.55)
-
-            // Live Level Meter & Waveform Visualizer
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .center, spacing: 12) {
-                    Label("实时输入电平", systemImage: "gauge.with.dots.needle.67percent")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: true, vertical: false)
-
-                    StudioLevelMeter(
-                        level: boundedLevel,
-                        isStreaming: isStreaming,
-                        isMuted: snapshot.settings.muted
-                    )
-
-                    Text("\(Int((boundedLevel * 100).rounded()))%")
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(isStreaming ? .primary : .secondary)
-                        .frame(width: 38, alignment: .trailing)
-                }
-
-                if !snapshot.waveform.isEmpty || isStreaming {
-                    WaveformView(
-                        samples: snapshot.waveform,
-                        tint: snapshot.settings.muted ? .orange : (isStreaming ? .green : .accentColor)
-                    )
-                    .frame(height: 36)
-                    .padding(.vertical, 2)
-                    .accessibilityLabel("来自当前快照的音频波形")
-                }
-            }
-
-            // Effective Audio Parameters & Frame Telemetry Bar
-            HStack(spacing: 6) {
-                let effective = snapshot.effectiveAudio ?? snapshot.settings.audio
-                ParameterTag(
-                    snapshot.settings.transport == .usb ? "USB 通道" : "Wi-Fi 无线",
-                    symbol: snapshot.settings.transport == .usb ? "cable.connector" : "wifi"
+    private var heroMicrophoneCard: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .center, spacing: 18) {
+                LineArtMicIcon(
+                    strokeColor: isRunning ? palette.waveBarBlue : palette.textPrimary,
+                    size: 44
                 )
-                ParameterTag("\(effective.sampleRate) Hz")
-                ParameterTag(effective.channels == 1 ? "单声道" : "立体声")
-                ParameterTag("PCM \(effective.format.rawValue.uppercased())")
-                ParameterTag(effective.source.label)
-                Spacer(minLength: 4)
-                Text("有效帧：\(snapshot.receivedFrames)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: true, vertical: false)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(isRunning ? "\(deviceDisplayName) 麦克风 · 传输中" : "\(deviceDisplayName) 麦克风")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+
+                    if isRunning {
+                        Text("PCM \(effectiveAudio.format.rawValue.uppercased()) · \(effectiveAudio.sampleRate) Hz · \(effectiveChannelsLabel)")
+                            .font(.system(size: 13, weight: .regular).monospacedDigit())
+                            .foregroundStyle(palette.textSecondary)
+                    } else {
+                        let transportDesc = snapshot.settings.transport == .usb ? "USB 有线连接" : "Wi-Fi 无线局域网传输"
+                        Text("\(transportDesc) · \(sampleRateKhzText) · \(effectiveChannelsLabel)")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                }
+                .layoutPriority(1)
+
+                Spacer(minLength: 16)
+
+                ZenCapsuleActionButton(
+                    title: isStoppedOrFailed ? "开始拾音" : "停止拾音",
+                    isStop: !isStoppedOrFailed,
+                    width: 144,
+                    height: 48,
+                    isDisabled: status.phase == .stopping || snapshot.isSavingSettings
+                ) {
+                    send(isStoppedOrFailed ? .start(.microphone) : .stop(.microphone))
+                }
+            }
+
+            if isRunning {
+                ZenWaveformWell(
+                    samples: snapshot.waveform,
+                    level: snapshot.level,
+                    barCount: 48,
+                    showDbPill: true
+                )
+
+                Rectangle()
+                    .fill(palette.divider)
+                    .frame(height: 1)
+
+                activeFooterBar
+            } else {
+                Rectangle()
+                    .fill(palette.divider)
+                    .frame(height: 1)
+
+                stillInlineConfigBar
             }
 
             if let errorCode = status.errorCode, !errorCode.isEmpty {
-                errorBanner(code: errorCode, detail: status.detail)
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(palette.stopCrimson)
+                    Text("\(errorCode)：\(status.detail.isEmpty ? "请检查设备连接或前往诊断日志排障" : status.detail)")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(palette.stopCrimson)
+                }
             }
         }
-        .padding(18)
-        .heroGlassSurface(tint: status.phase.tint)
-        .accessibilityElement(children: .contain)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 28)
+        .zenCard(isActive: isRunning, cornerRadius: 20)
     }
 
-    // MARK: - Pixel-Aligned Native Grouped Sections
+    // MARK: - Still Mode Inline Configuration Row
 
-    private var realtimeAudioControlSection: some View {
-        NativeGroupedSection("实时调音与输出路由") {
-            NativeSettingRow(
-                title: "静音 Mac 输出",
-                subtitle: "仅静音 Mac 端播放或声卡输出，不会中断手机端采音会话",
-                symbol: snapshot.settings.muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                symbolTint: snapshot.settings.muted ? .orange : .accentColor
-            ) {
-                Toggle("静音 Mac 输出", isOn: Binding(
-                    get: { snapshot.settings.muted },
-                    set: { send(.setMuted($0)) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
+    private var stillInlineConfigBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 20) {
+                routeControlGroup
+                outputControlGroup
+                Spacer(minLength: 8)
+                transportControlGroup
             }
 
-            NativeSettingRow(
-                title: "输入数字增益",
-                subtitle: "实时放大或衰减 PCM 样本，无需重启录音",
-                symbol: "dial.medium.fill",
-                symbolTint: .blue
-            ) {
-                HStack(spacing: 8) {
-                    Slider(
-                        value: Binding(
-                            get: { snapshot.settings.gain },
-                            set: { send(.setGain($0)) }
-                        ),
-                        in: 0...4
-                    )
-                    .frame(width: 150)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 16) {
+                    routeControlGroup
+                    Spacer(minLength: 8)
+                    transportControlGroup
+                }
+                outputControlGroup
+            }
+        }
+    }
 
-                    Text("\(snapshot.settings.gain, format: .number.precision(.fractionLength(2)))×")
-                        .font(.callout.monospacedDigit().weight(.medium))
-                        .frame(width: 48, alignment: .trailing)
+    private var routeControlGroup: some View {
+        HStack(spacing: 12) {
+            Text("输出路由")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(palette.textSecondary)
+                .fixedSize()
 
-                    if abs(snapshot.settings.gain - 1.0) >= 0.005 {
-                        Button("重置") {
-                            send(.setGain(1.0))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .fixedSize(horizontal: true, vertical: false)
-                    } else {
-                        Text("标准")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(.quaternary.opacity(0.6), in: Capsule())
+            purposeSegmentedPill
+        }
+    }
+
+    private var outputControlGroup: some View {
+        HStack(spacing: 12) {
+            Text("目标声卡")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(palette.textSecondary)
+                .fixedSize()
+
+            outputDeviceMenu
+        }
+    }
+
+    private var transportControlGroup: some View {
+        HStack(spacing: 10) {
+            Text("通道")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(palette.textSecondary)
+                .fixedSize()
+
+            Menu {
+                Button("USB 有线 (低延迟)") {
+                    updateSettings { $0.transport = .usb }
+                }
+                Button("Wi-Fi 局域网") {
+                    updateSettings { $0.transport = .wifi }
+                }
+                Divider()
+                Button("高级传输设置…", action: onOpenSettings)
+            } label: {
+                Text(snapshot.settings.transport == .usb ? "USB 有线 (低延迟)" : "Wi-Fi 局域网")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .fixedSize()
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var purposeSegmentedPill: some View {
+        HStack(spacing: 0) {
+            purposeSegmentButton(title: "本机试听", purpose: .monitor)
+            purposeSegmentButton(title: "虚拟麦克风", purpose: .virtualMicrophone)
+        }
+        .padding(2)
+        .frame(height: 34)
+        .background(palette.segmentedTrack, in: Capsule())
+    }
+
+    private func purposeSegmentButton(title: String, purpose: OutputPurpose) -> some View {
+        let isSelected = snapshot.settings.purpose == purpose
+        return Button {
+            guard snapshot.settings.purpose != purpose else { return }
+            updateSettings { draft in
+                draft.purpose = purpose
+                if purpose == .virtualMicrophone,
+                   let firstVirtual = snapshot.outputs.first(where: { $0.isVirtual }) {
+                    draft.outputUID = firstVirtual.id
+                } else if purpose == .monitor {
+                    draft.outputUID = "default"
+                }
+            }
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? palette.textPrimary : palette.textSecondary)
+                .frame(width: 92, height: 30)
+                .background(
+                    Capsule()
+                        .fill(isSelected ? palette.cardBackground : Color.clear)
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var outputDeviceMenu: some View {
+        Menu {
+            Button("系统默认声卡") {
+                updateSettings { $0.outputUID = "default" }
+            }
+            if !snapshot.outputs.isEmpty {
+                Divider()
+                ForEach(snapshot.outputs) { output in
+                    Button(output.name) {
+                        updateSettings { $0.outputUID = output.id }
                     }
                 }
             }
+            Divider()
+            Button("声卡与采样设置…", action: onOpenSettings)
+            if snapshot.settings.purpose == .virtualMicrophone {
+                Button("虚拟声卡驱动指南…") {
+                    send(.openDriverHelp)
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(selectedOutputShortName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                Image(systemName: "arrowtriangle.down.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(palette.textSecondary)
+            }
+            .padding(.horizontal, 14)
+            .frame(minWidth: 164, minHeight: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(palette.cardBackground)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(palette.border, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
 
-            NativeSettingRow(
-                title: "音频输出路由",
-                subtitle: selectedOutputName,
-                symbol: snapshot.settings.purpose == .monitor ? "headphones" : "mic.and.signal.meter",
-                symbolTint: .indigo,
-                showDivider: false
-            ) {
-                HStack(spacing: 8) {
-                    StatusPill(
-                        label: snapshot.settings.purpose == .monitor ? "本机试听" : "虚拟麦克风",
-                        tint: .accentColor
-                    )
+    // MARK: - Active Mode Footer Row
 
-                    if snapshot.settings.purpose == .virtualMicrophone {
+    private var activeFooterBar: some View {
+        HStack(alignment: .center) {
+            HStack(spacing: 10) {
+                Text("当前输出")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(palette.textSecondary)
+
+                Text("\(snapshot.settings.purpose == .monitor ? "本机试听" : "虚拟麦克风") · \(selectedOutputShortName)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+            }
+
+            Spacer()
+
+            Text("通道：\(snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi")")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(palette.textSecondary)
+        }
+    }
+
+    // MARK: - Section 2: 快速调音 Card
+
+    private var quickTuningSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("快速调音")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(palette.textSecondary)
+
+            VStack(spacing: 0) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("静音 Mac 监听输出")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(palette.textPrimary)
+                        Text("仅关闭 Mac 播放，手机采音不受影响")
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(palette.textTertiary)
+                    }
+
+                    Spacer()
+
+                    Toggle("静音 Mac 监听输出", isOn: Binding(
+                        get: { snapshot.settings.muted },
+                        set: { send(.setMuted($0)) }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                }
+                .padding(.horizontal, 28)
+                .frame(height: 88)
+
+                Rectangle()
+                    .fill(palette.divider)
+                    .frame(height: 1)
+                    .padding(.horizontal, 28)
+
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("输入数字增益")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(palette.textPrimary)
+                        Text("实时放大或衰减采样信号")
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(palette.textTertiary)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 16) {
+                        Slider(
+                            value: Binding(
+                                get: { snapshot.settings.gain },
+                                set: { send(.setGain($0)) }
+                            ),
+                            in: 0...4
+                        )
+                        .tint(palette.accentBlue)
+                        .frame(width: 180)
+
                         Button {
-                            send(.openDriverHelp)
+                            send(.setGain(1.0))
                         } label: {
-                            Label("驱动指南", systemImage: "arrow.up.right.square")
+                            Text("\(snapshot.settings.gain, format: .number.precision(.fractionLength(2)))×")
+                                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(palette.textPrimary)
+                                .frame(width: 46, alignment: .trailing)
                         }
-                        .controlSize(.small)
+                        .buttonStyle(.plain)
+                        .help("点击重置为 1.00×")
                     }
-
-                    Button("更改…", action: onOpenSettings)
-                        .controlSize(.small)
                 }
+                .padding(.horizontal, 28)
+                .frame(height: 88)
             }
+            .zenCard(isActive: false, cornerRadius: 18)
         }
     }
 
-    private var transportAndDeviceSection: some View {
-        NativeGroupedSection(
-            "连接与目标设备",
-            footer: snapshot.settings.transport == .wifi
-                ? "点击「开始拾音」后 Mac 将监听局域网连接；若此时手机插着 USB，会自动将本机局域网 IP 同步至手机。"
-                : nil
-        ) {
-            NativeSettingRow(
-                title: "目标 Android 手机",
-                subtitle: snapshot.devices.isEmpty ? "连接手机并开启 USB 调试后点击刷新" : "选择用于拾音或同步参数的手机",
-                symbol: "iphone.gen3",
-                symbolTint: snapshot.devices.isEmpty ? .secondary : .green
-            ) {
-                HStack(spacing: 8) {
-                    if snapshot.devices.isEmpty {
-                        Text("未检测到手机")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Picker("选择手机", selection: selectedDeviceBinding) {
-                            Text("请选择设备").tag(String?.none)
-                            ForEach(snapshot.devices) { device in
-                                Text("\(device.name) (\(device.state.shortLabel))")
-                                    .tag(Optional(device.id))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 210)
-                    }
-                    Button {
-                        send(.refresh)
-                    } label: {
-                        Label("刷新", systemImage: "arrow.clockwise")
-                    }
-                    .controlSize(.small)
-                }
-            }
-
-            NativeSettingRow(
-                title: "当前传输通道",
-                subtitle: snapshot.settings.transport == .usb
-                    ? "通过 ADB TCP 转发实现超低延迟有线传输"
-                    : "音频端口 \(snapshot.settings.audioPort) · 配对码：\(snapshot.settings.pairingCode.isEmpty ? "免配对码" : snapshot.settings.pairingCode)",
-                symbol: snapshot.settings.transport == .usb ? "cable.connector" : "wifi",
-                symbolTint: .teal,
-                showDivider: false
-            ) {
-                HStack(spacing: 8) {
-                    StatusPill(
-                        label: snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi 局域网",
-                        tint: .teal
-                    )
-                    Button("传输设置…", action: onOpenSettings)
-                        .controlSize(.small)
-                }
-            }
-        }
-    }
-
-    private var selectedDeviceBinding: Binding<String?> {
-        Binding(
-            get: { snapshot.selectedDeviceID },
-            set: { if let id = $0 { send(.selectDevice(id)) } }
-        )
-    }
-
-    private func errorBanner(code: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-                .font(.body)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("诊断代码：\(code)")
-                    .font(.callout.weight(.semibold))
-                Text(detail.isEmpty ? "请前往「诊断日志」查看详细原因与排障建议。" : detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.red.opacity(0.25), lineWidth: 0.8)
-        }
+    private func updateSettings(_ mutate: (inout Contracts.Settings) -> Void) {
+        var next = snapshot.settings
+        mutate(&next)
+        send(.saveSettings(next))
     }
 }

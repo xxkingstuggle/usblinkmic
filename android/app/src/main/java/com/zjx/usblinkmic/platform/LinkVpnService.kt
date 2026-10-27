@@ -20,7 +20,13 @@ class LinkVpnService : VpnService() {
   if(r==null || r.cancelled || !r.accepted || intent?.getStringExtra("session")!=r.session || prepare(this)!=null){stopSelf();return START_NOT_STICKY}
   if(tun!=null) return START_NOT_STICKY
   request=r;closed=false
-  startForeground(11,Notifications.create(this,"USB LinkMic反向供网",Intent(this,LinkVpnService::class.java).setAction("STOP")))
+  startForeground(11,Notifications.create(
+   this,
+   "USB LinkMic · 反向供网",
+   Intent(this,LinkVpnService::class.java).setAction("STOP"),
+   subtitle = "Mac 网络正通过 USB 隧道共享给手机",
+   stopLabel = "停止供网",
+  ))
   try {
    val builder=Builder().setSession("USB LinkMic v4").addAddress("10.0.0.2",32).setMtu(16384).setBlocking(true)
    r.settings.dns.split(",").forEach{builder.addDnsServer(it.trim())}

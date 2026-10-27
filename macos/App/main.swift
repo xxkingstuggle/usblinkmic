@@ -10,17 +10,18 @@ import UI
     var body: some Scene {
         WindowGroup("USB LinkMic", id: "main") {
             RootView(snapshot: controller.snapshot, send: controller.send)
-                .frame(minWidth: 720, minHeight: 520)
+                .frame(minWidth: 860, minHeight: 580)
+                .ignoresSafeArea(.container, edges: .top)
                 .onAppear {
                     delegate.controller = controller
                     controller.boot()
                 }
         }
-        .windowToolbarStyle(.unified)
-        .defaultSize(width: 960, height: 640)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1120, height: 720)
         .commands {
             CommandGroup(after: .appSettings) {
-                Button("设置…") {
+                Button("偏好设置…") {
                     NotificationCenter.default.post(name: Notification.Name("USBLinkMic.showSettings"), object: nil)
                 }
                 .keyboardShortcut(",")

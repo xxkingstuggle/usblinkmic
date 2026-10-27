@@ -2,242 +2,275 @@ import SwiftUI
 import Contracts
 
 struct DevicesWorkspaceView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let snapshot: AppSnapshot
     let send: (UserAction) -> Void
 
-    private var onlineCount: Int {
-        snapshot.devices.filter { $0.state == .online }.count
-    }
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                heroDeviceBanner
-                deviceListSection
-                permissionSection
-                moduleSummarySection
-                if !snapshot.recoveryMessage.isEmpty {
-                    NativeGroupedSection("启动恢复记录") {
-                        NativeSettingRow(
-                            title: "持久化恢复摘要",
-                            subtitle: snapshot.recoveryMessage,
-                            symbol: "arrow.uturn.backward.circle.fill",
-                            symbolTint: .orange,
-                            showDivider: false
-                        ) {
-                            EmptyView()
-                        }
-                    }
-                }
+            VStack(alignment: .leading, spacing: 22) {
+                ZenWorkspaceHeroHeader(
+                    eyebrow: "硬件与授权",
+                    title: snapshot.devices.isEmpty
+                        ? "等待 Android 手机连接"
+                        : "已识别 \(snapshot.devices.count) 台 Android 手机",
+                    subtitle: snapshot.devices.isEmpty
+                        ? "请通过 USB 数据线连接 Android 手机，并在手机弹窗中点击「允许 USB 调试」。"
+                        : "已通过 USB 有线通道建立控制总线，设备与权限状态实时同步。"
+                )
+
+                deviceCardSection
+
+                permissionTableSection
+
+                adbHealthSection
             }
-            .frame(maxWidth: 880, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .top)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            .frame(maxWidth: 816, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 40)
+            .padding(.vertical, 28)
         }
     }
 
-    private var heroDeviceBanner: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill((onlineCount > 0 ? Color.green : Color.accentColor).opacity(0.15))
-                    .frame(width: 46, height: 46)
-                Image(systemName: snapshot.devices.isEmpty ? "iphone.slash" : "iphone.gen3.radiowaves.left.and.right")
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundStyle(onlineCount > 0 ? .green : .accentColor)
-                    .symbolRenderingMode(.hierarchical)
-            }
+    // MARK: - Device Card
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(snapshot.devices.isEmpty ? "尚未检测到 USB 设备" : "已发现 \(snapshot.devices.count) 台设备（\(onlineCount) 台在线）")
-                        .font(.title3.weight(.semibold))
-                    if let selectedID = snapshot.selectedDeviceID,
-                       let device = snapshot.devices.first(where: { $0.id == selectedID }) {
-                        StatusPill(
-                            label: "当前目标：\(device.name)",
-                            symbol: "checkmark.circle.fill",
-                            tint: device.state.tint
-                        )
+    private var deviceCardSection: some View {
+        VStack(spacing: 12) {
+            if snapshot.devices.isEmpty {
+                HStack(alignment: .center, spacing: 20) {
+                    LineArtPhoneIcon(strokeColor: palette.textSecondary)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("尚未检测到 Android 手机")
+                            .font(.system(size: 19, weight: .bold))
+                            .foregroundStyle(palette.textPrimary)
+
+                        Text("支持 Android 8.0+ 手机 · 请确认已开启开发者选项与 USB 调试")
+                            .font(.system(size: 13))
+                            .foregroundStyle(palette.textSecondary)
+
+                        Text("连接后将自动同步配套服务与系统权限")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(palette.textTertiary)
                     }
+
+                    Spacer(minLength: 16)
+
+                    rescanButton
                 }
-                Text("连接 Android 手机并开启「开发者选项 → USB 调试」，在手机弹窗中点击「允许」后即可建立控制通道。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 24)
+                .zenCard(isActive: false, cornerRadius: 20)
+            } else {
+                ForEach(snapshot.devices) { device in
+                    let isSelected = device.id == snapshot.selectedDeviceID || snapshot.selectedDeviceID == nil
+                    HStack(alignment: .center, spacing: 20) {
+                        LineArtPhoneIcon(strokeColor: palette.textPrimary)
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(device.name)
+                                .font(.system(size: 19, weight: .bold))
+                                .foregroundStyle(palette.textPrimary)
+
+                            Text("序列号：\(device.id) · 物理接口：USB 有线直连 · \(device.state.label)")
+                                .font(.system(size: 12).monospacedDigit())
+                                .foregroundStyle(palette.textSecondary)
+
+                            Button {
+                                send(.selectDevice(device.id))
+                            } label: {
+                                Text(isSelected ? "已选为主要采音与网络桥接设备" : "点击设为当前目标设备 (\(device.state.label))")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(isSelected ? palette.emeraldGreen : palette.accentBlue)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Spacer(minLength: 16)
+
+                        rescanButton
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 22)
+                    .zenCard(isActive: false, cornerRadius: 20)
+                }
             }
+        }
+    }
 
-            Spacer(minLength: 12)
+    private var rescanButton: some View {
+        Button {
+            send(.refresh)
+        } label: {
+            HStack(spacing: 6) {
+                Text("重新扫描")
+                    .font(.system(size: 13, weight: .semibold))
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: 120, height: 42)
+            .background(
+                Color(red: 0x00 / 255.0, green: 0x71 / 255.0, blue: 0xE3 / 255.0),
+                in: Capsule()
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
 
-            HStack(spacing: 8) {
+    // MARK: - Section 2: 手机端系统权限状态
+
+    private var permissionTableSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("手机端系统权限状态 (自动双向同步)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(palette.textSecondary)
+
+                Spacer()
+
                 if snapshot.selectedDeviceID != nil {
                     Button {
                         send(.openPhoneSettings)
                     } label: {
-                        Label("手机应用设置", systemImage: "arrow.up.forward.app")
-                    }
-                }
-
-                Button {
-                    send(.refresh)
-                } label: {
-                    Label("刷新设备", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(18)
-        .heroGlassSurface(tint: onlineCount > 0 ? .green : .accentColor)
-    }
-
-    private var deviceListSection: some View {
-        NativeGroupedSection("USB 设备列表") {
-            if snapshot.devices.isEmpty {
-                NativeSettingRow(
-                    title: "没有检测到 Android 手机",
-                    subtitle: "请使用支持数据传输的 USB 线连接手机，并在手机上确认 USB 调试信任。",
-                    symbol: "cable.connector.slash",
-                    symbolTint: .secondary,
-                    showDivider: false
-                ) {
-                    Button("重新扫描") {
-                        send(.refresh)
-                    }
-                    .controlSize(.small)
-                }
-            } else {
-                ForEach(Array(snapshot.devices.enumerated()), id: \.element.id) { index, device in
-                    let isSelected = device.id == snapshot.selectedDeviceID
-                    Button {
-                        send(.selectDevice(device.id))
-                    } label: {
-                        NativeSettingRow(
-                            title: device.name,
-                            subtitle: "序列号：\(device.id)",
-                            symbol: isSelected ? "checkmark.circle.fill" : "iphone.gen3",
-                            symbolTint: isSelected ? .accentColor : device.state.tint,
-                            showDivider: index < snapshot.devices.count - 1
-                        ) {
-                            StatusPill(
-                                label: device.state.label,
-                                tint: device.state.tint
-                            )
-                        }
-                        .contentShape(Rectangle())
+                        Text("打开手机端系统设置 ↗")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(palette.accentBlue)
                     }
                     .buttonStyle(.plain)
                 }
             }
+
+            VStack(spacing: 0) {
+                permissionRow(
+                    title: "麦克风录音权限 (RECORD_AUDIO)",
+                    description: "用于 USB / Wi-Fi 实时采集手机麦克风音频流",
+                    statusText: snapshot.microphonePermission.label,
+                    tint: snapshot.microphonePermission.tint,
+                    showDivider: true
+                )
+                permissionRow(
+                    title: "前台常驻服务通知 (POST_NOTIFICATIONS)",
+                    description: "维持 Android 后台音频引擎常驻，不被系统冻结",
+                    statusText: snapshot.notificationPermission.label,
+                    tint: snapshot.notificationPermission.tint,
+                    showDivider: true
+                )
+                permissionRow(
+                    title: "VPN 虚拟网卡隧道 (VpnService)",
+                    description: "用于「Mac 网络给手机」时建立本地环回网络隧道",
+                    statusText: snapshot.vpnPermission.label,
+                    tint: snapshot.vpnPermission.tint,
+                    showDivider: false
+                )
+            }
+            .zenCard(isActive: false, cornerRadius: 18)
         }
     }
 
-    private var permissionSection: some View {
-        NativeGroupedSection(
-            "手机端系统权限状态",
-            footer: "权限状态由手机端配套 App 实时上报；若某项显示「已拒绝」或「需在手机系统设置开启」，可点击上方「手机应用设置」直接跳转。"
-        ) {
-            NativeSettingRow(
-                title: "麦克风录音授权",
-                subtitle: "用于 USB / Wi-Fi 实时采集手机麦克风音频",
-                symbol: "mic.fill",
-                symbolTint: snapshot.microphonePermission.tint
-            ) {
-                StatusPill(
-                    label: snapshot.microphonePermission.label,
-                    symbol: snapshot.microphonePermission.symbol,
-                    tint: snapshot.microphonePermission.tint
-                )
-            }
+    private func permissionRow(
+        title: String,
+        description: String,
+        statusText: String,
+        tint: Color,
+        showDivider: Bool
+    ) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 16) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .frame(width: 280, alignment: .leading)
+                    .lineLimit(1)
 
-            NativeSettingRow(
-                title: "前台常驻通知权限",
-                subtitle: "Android 后台采音与网络共享保活所需的前台服务通知",
-                symbol: "bell.badge.fill",
-                symbolTint: snapshot.notificationPermission.tint
-            ) {
-                StatusPill(
-                    label: snapshot.notificationPermission.label,
-                    symbol: snapshot.notificationPermission.symbol,
-                    tint: snapshot.notificationPermission.tint
-                )
-            }
+                Text(description)
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
 
-            NativeSettingRow(
-                title: "VPN 隧道授权",
-                subtitle: "仅在「Mac 网络给手机」反向供网时由手机系统弹窗确认",
-                symbol: "network.badge.shield.half.filled",
-                symbolTint: snapshot.vpnPermission.tint,
-                showDivider: false
-            ) {
-                StatusPill(
-                    label: snapshot.vpnPermission.label,
-                    symbol: snapshot.vpnPermission.symbol,
-                    tint: snapshot.vpnPermission.tint
-                )
+                Spacer(minLength: 12)
+
+                StatusPill(label: statusText, tint: tint)
+            }
+            .padding(.horizontal, 24)
+            .frame(height: 50)
+
+            if showDivider {
+                Rectangle()
+                    .fill(palette.divider)
+                    .frame(height: 1)
+                    .padding(.horizontal, 24)
             }
         }
     }
 
-    private var moduleSummarySection: some View {
-        NativeGroupedSection("三大功能模块运行概览") {
-            NativeSettingRow(
-                title: "手机麦克风",
-                subtitle: snapshot.microphone.stage,
-                symbol: "mic.fill",
-                symbolTint: snapshot.microphone.phase.tint
-            ) {
-                StatusPill(
-                    label: snapshot.microphone.phase.label,
-                    symbol: snapshot.microphone.phase.symbol,
-                    tint: snapshot.microphone.phase.tint
-                )
-            }
+    // MARK: - Section 3: ADB 通信与链路健康度
 
-            NativeSettingRow(
-                title: "手机网络给 Mac",
-                subtitle: snapshot.phoneInternet.stage,
-                symbol: "personalhotspot",
-                symbolTint: snapshot.phoneInternet.phase.tint
-            ) {
-                StatusPill(
-                    label: snapshot.phoneInternet.phase.label,
-                    symbol: snapshot.phoneInternet.phase.symbol,
-                    tint: snapshot.phoneInternet.phase.tint
-                )
-            }
+    private var adbHealthSection: some View {
+        let rateKhz = String(format: "%.1f", Double(snapshot.settings.audio.sampleRate) / 1000.0)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("ADB 通信与链路健康度")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(palette.textSecondary)
 
-            NativeSettingRow(
-                title: "Mac 网络给手机",
-                subtitle: snapshot.macInternet.stage,
-                symbol: "network",
-                symbolTint: snapshot.macInternet.phase.tint,
-                showDivider: false
-            ) {
-                StatusPill(
-                    label: snapshot.macInternet.phase.label,
-                    symbol: snapshot.macInternet.phase.symbol,
-                    tint: snapshot.macInternet.phase.tint
-                )
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("控制端口：TCP \(snapshot.settings.controlPort)")
+                        .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(palette.textPrimary)
+                    Text("物理连接状态：\(snapshot.devices.isEmpty ? "待连接" : "USB 有线直连")")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("音频流端口：TCP \(snapshot.settings.audioPort) (\(snapshot.settings.audio.format.rawValue.uppercased()) \(rateKhz)kHz)")
+                        .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(palette.textPrimary)
+                    Text("累计接收音频帧：\(snapshot.receivedFrames.formatted()) 帧")
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("网络共享：USB NCM 虚拟网卡")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text("隧道出口：\(snapshot.settings.routes)")
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .zenCard(isActive: false, cornerRadius: 18)
         }
     }
 }
 
-// MARK: - Console.app Style Diagnostic Logs Workspace
+// MARK: - Section 10 Diagnostic Logs Workspace (1H & 1I)
 
 struct LogsWorkspaceView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let snapshot: AppSnapshot
     let send: (UserAction) -> Void
 
     @State private var selectedFilter: LogFilter = .all
     @State private var searchQuery: String = ""
 
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
+
     enum LogFilter: String, CaseIterable, Identifiable {
         case all = "全部"
-        case audio = "音频与麦克风"
+        case audio = "音频麦克风"
         case network = "网络共享"
-        case system = "设备与恢复"
+        case system = "设备恢复"
 
         var id: String { rawValue }
 
@@ -255,6 +288,10 @@ struct LogsWorkspaceView: View {
         }
     }
 
+    private func count(for filter: LogFilter) -> Int {
+        snapshot.logs.filter { filter.matches($0.module) }.count
+    }
+
     private var filteredLogs: [LogEntry] {
         snapshot.logs.reversed().filter { entry in
             guard selectedFilter.matches(entry.module) else { return false }
@@ -267,162 +304,216 @@ struct LogsWorkspaceView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            consoleToolbar
-            Divider()
-            consoleBody
+        VStack(alignment: .leading, spacing: 18) {
+            filterToolbarCard
+            logTableCard
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: 816, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, 40)
+        .padding(.vertical, 24)
     }
 
-    private var consoleToolbar: some View {
-        HStack(spacing: 12) {
-            Picker("筛选模块", selection: $selectedFilter) {
+    // MARK: - Filter Toolbar Card
+
+    private var filterToolbarCard: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
                 ForEach(LogFilter.allCases) { filter in
-                    Text(filter.rawValue).tag(filter)
+                    let isSelected = selectedFilter == filter
+                    Button {
+                        selectedFilter = filter
+                    } label: {
+                        Text("\(filter.rawValue) (\(count(for: filter)))")
+                            .font(.system(size: 12, weight: isSelected ? .bold : .medium).monospacedDigit())
+                            .foregroundStyle(isSelected ? palette.accentBlue : palette.textSecondary)
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(isSelected ? palette.accentBlue.opacity(palette.isDark ? 0.22 : 0.12) : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 340)
+
+            Spacer(minLength: 8)
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                TextField("过滤阶段、错误码或关键字…", text: $searchQuery)
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.textTertiary)
+
+                TextField("过滤关键字或错误码...", text: $searchQuery)
                     .textFieldStyle(.plain)
-                    .font(.callout)
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.textPrimary)
+
                 if !searchQuery.isEmpty {
                     Button {
                         searchQuery = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11))
+                            .foregroundStyle(palette.textTertiary)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .frame(maxWidth: 240)
-            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-
-            Spacer()
-
-            Text("\(filteredLogs.count) / \(snapshot.logs.count) 条")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .frame(width: 196, height: 32)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(palette.windowBackground)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(palette.border, lineWidth: 1)
+            }
 
             Button {
                 send(.exportLogs)
             } label: {
-                Label("导出…", systemImage: "square.and.arrow.up")
+                Text("导出 ↻")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(palette.cardBackground)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(palette.border, lineWidth: 1)
+                    }
             }
-            .controlSize(.small)
+            .buttonStyle(.plain)
 
-            Button(role: .destructive) {
+            Button {
                 send(.clearLogs)
             } label: {
-                Label("清空", systemImage: "trash")
+                Text("清空 ⌫")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.stopCrimson)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(palette.cardBackground)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(palette.border, lineWidth: 1)
+                    }
             }
-            .controlSize(.small)
+            .buttonStyle(.plain)
             .disabled(snapshot.logs.isEmpty)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .frame(height: 52)
+        .zenCard(isActive: false, cornerRadius: 14)
     }
 
-    @ViewBuilder
-    private var consoleBody: some View {
-        if snapshot.logs.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "text.and.command.macwindow")
-                    .font(.system(size: 32, weight: .light))
-                    .foregroundStyle(.secondary)
-                Text("暂无诊断日志")
-                    .font(.headline)
-                Text("连接阶段、音频帧统计与错误详情将按时间倒序实时记录在此处。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+    // MARK: - Console Table Card
+
+    private var logTableCard: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("时间戳")
+                    .frame(width: 96, alignment: .leading)
+                Text("模块")
+                    .frame(width: 100, alignment: .leading)
+                Text("阶段")
+                    .frame(width: 136, alignment: .leading)
+                Text("日志消息与遥测内容")
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(32)
-        } else if filteredLogs.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "line.3.horizontal.decrease.circle")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.secondary)
-                Text("没有匹配的日志条目")
-                    .font(.headline)
-                Button("重置筛选条件") {
-                    selectedFilter = .all
-                    searchQuery = ""
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(palette.textTertiary)
+            .padding(.horizontal, 20)
+            .frame(height: 38)
+            .background(palette.windowBackground.opacity(0.65))
+
+            Rectangle()
+                .fill(palette.divider)
+                .frame(height: 1)
+
+            if filteredLogs.isEmpty {
+                VStack(spacing: 8) {
+                    Text(snapshot.logs.isEmpty ? "暂无诊断日志" : "没有匹配的日志记录")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(palette.textSecondary)
+                    Text("系统控制台实时输出与排障事件将按时间倒序流式展示在此处。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textTertiary)
                 }
-                .controlSize(.small)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(32)
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(filteredLogs.enumerated()), id: \.element.id) { index, entry in
-                        ConsoleLogRow(entry: entry, isEven: index.isMultiple(of: 2))
-                        Divider()
-                            .opacity(0.35)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(filteredLogs) { entry in
+                            ZenConsoleLogRow(entry: entry, palette: palette)
+                            Rectangle()
+                                .fill(palette.divider)
+                                .frame(height: 1)
+                        }
                     }
                 }
             }
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.45))
         }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .zenCard(isActive: false, cornerRadius: 18)
     }
 }
 
-private struct ConsoleLogRow: View {
+private struct ZenConsoleLogRow: View {
     let entry: LogEntry
-    let isEven: Bool
+    let palette: ZenPalette
 
-    private var moduleTint: Color {
-        switch entry.module {
-        case "audio", "microphone": .blue
-        case "phoneInternet": .green
-        case "macInternet": .purple
-        case "recovery", "shutdown": .orange
-        default: .secondary
-        }
-    }
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(entry.date, style: .time)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 68, alignment: .leading)
-
-            Text(entry.module)
-                .font(.caption2.monospaced().weight(.semibold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(moduleTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                .foregroundStyle(moduleTint)
+        HStack(alignment: .center, spacing: 12) {
+            Text(Self.timeFormatter.string(from: entry.date))
+                .font(.system(size: 12, design: .monospaced).monospacedDigit())
+                .foregroundStyle(palette.textSecondary)
                 .frame(width: 96, alignment: .leading)
 
+            HStack {
+                Text(entry.module)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(palette.textSecondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(palette.segmentedTrack)
+                    )
+                Spacer(minLength: 0)
+            }
+            .frame(width: 100, alignment: .leading)
+
             Text(entry.stage)
-                .font(.caption.monospaced().weight(.medium))
-                .foregroundStyle(.primary.opacity(0.85))
-                .frame(width: 140, alignment: .leading)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(palette.textPrimary)
+                .frame(width: 136, alignment: .leading)
                 .lineLimit(1)
 
             Text(entry.message)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.primary)
+                .font(.system(size: 12))
+                .foregroundStyle(palette.textPrimary)
                 .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 7)
-        .background(isEven ? Color.clear : Color.primary.opacity(0.025))
+        .padding(.horizontal, 20)
+        .padding(.vertical, 11)
     }
 }
