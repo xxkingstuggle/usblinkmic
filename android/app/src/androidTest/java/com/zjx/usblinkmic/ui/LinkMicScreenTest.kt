@@ -42,7 +42,7 @@ class LinkMicScreenTest {
         composeRule.onNodeWithText("Wi-Fi 麦克风").assertExists()
         composeRule.onNodeWithText("等待手机确认").assertExists()
 
-        composeRule.onNodeWithText("网络共享").performClick()
+        composeRule.onNodeWithText("网络互联").performClick()
         composeRule.onNodeWithText("手机网络给 Mac").assertExists()
         composeRule.onNodeWithText("Mac 网络给手机").assertExists()
         composeRule.onNodeWithText("出口验证中").assertExists()

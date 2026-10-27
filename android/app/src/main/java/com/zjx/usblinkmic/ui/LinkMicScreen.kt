@@ -439,8 +439,25 @@ private fun NetworkPage(
             subtitle = "免热点 · 免驱动 · USB 原生网络共享",
         )
 
-        PhoneToMacCard(snapshot, palette)
-        MacToPhoneCard(snapshot, palette, onAction)
+        // Both directions share one USB NCM channel and are mutually exclusive,
+        // so whichever is actually running leads the page.
+        val macLeads = snapshot.macInternet.phase == TaskPhase.RUNNING &&
+            snapshot.phoneInternet.phase != TaskPhase.RUNNING
+
+        if (macLeads) {
+            MacToPhoneCard(snapshot, palette, onAction)
+            PhoneToMacCard(snapshot, palette)
+        } else {
+            PhoneToMacCard(snapshot, palette)
+            MacToPhoneCard(snapshot, palette, onAction)
+        }
+
+        Text(
+            text = "两个方向共用同一条 USB 通道，同一时间只能运行一个。",
+            fontSize = 11.5.sp,
+            color = palette.textTertiary,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
     }
 }
 
@@ -977,7 +994,7 @@ private enum class LogFilter(val label: String) {
 
 private enum class ScreenSection(val label: String, val icon: ImageVector) {
     MIC("麦克风", Icons.Outlined.Mic),
-    NETWORK("网络共享", Icons.Outlined.Public),
+    NETWORK("网络互联", Icons.Outlined.Public),
     SETTINGS("设置与诊断", Icons.Outlined.Settings),
 }
 

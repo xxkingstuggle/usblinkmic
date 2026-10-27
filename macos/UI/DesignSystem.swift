@@ -2,46 +2,54 @@ import SwiftUI
 import AppKit
 import Contracts
 
-// MARK: - Workspace & State Presentation
+// MARK: - Sidebar Sections & State Presentation
 
-public extension Workspace {
-    var title: String {
+/// A sidebar destination. Network sharing is one page with both directions
+/// rather than two entries, because the two directions live in the same
+/// USB NCM channel and are mutually exclusive at runtime.
+public enum SidebarSection: String, CaseIterable, Identifiable, Sendable {
+    case microphone
+    case network
+    case devices
+    case logs
+
+    public var id: String { rawValue }
+
+    public var title: String {
         switch self {
         case .microphone: "手机麦克风"
-        case .phoneInternet: "手机网络给 Mac"
-        case .macInternet: "Mac 网络给手机"
+        case .network: "网络互联"
         case .devices: "设备与权限"
         case .logs: "诊断日志"
         }
     }
 
-    var shortTitle: String {
-        switch self {
-        case .microphone: "手机麦克风"
-        case .phoneInternet: "手机供网"
-        case .macInternet: "反向供网"
-        case .devices: "设备"
-        case .logs: "日志"
-        }
-    }
-
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .microphone: "mic"
-        case .phoneInternet: "arrow.left.arrow.right"
-        case .macInternet: "globe"
+        case .network: "arrow.left.arrow.right"
         case .devices: "iphone"
         case .logs: "list.bullet.rectangle"
         }
     }
 
-    var subtitle: String {
+    public var subtitle: String {
         switch self {
         case .microphone: "作为 Mac 的低延迟音频输入"
-        case .phoneInternet: "USB NCM 原生共享网络至 macOS"
-        case .macInternet: "通过 USB 隧道将 Mac 网络共享给手机"
+        case .network: "USB NCM 双向网络共享 · 手机与 Mac 互供"
         case .devices: "管理连接的 Android 设备与端到端授权"
         case .logs: "系统控制台实时输出与排障记录"
+        }
+    }
+
+    /// Workspace still names the runtime tasks that start/stop, not the pages.
+    /// Mapping keeps the two in sync without a second source of truth.
+    public init(workspace: Workspace) {
+        switch workspace {
+        case .microphone: self = .microphone
+        case .phoneInternet, .macInternet: self = .network
+        case .devices: self = .devices
+        case .logs: self = .logs
         }
     }
 }

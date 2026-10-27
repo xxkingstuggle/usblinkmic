@@ -51,16 +51,38 @@ final class RenderTests: XCTestCase {
         let snapshot = activeSnapshot()
 
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            for workspace in Workspace.allCases {
+            for section in SidebarSection.allCases {
                 let view = NSHostingView(
-                    rootView: RootView(snapshot: snapshot, initialWorkspace: workspace, send: { _ in })
+                    rootView: RootView(snapshot: snapshot, initialSection: section, send: { _ in })
                 )
                 view.appearance = NSAppearance(named: appearance)
                 view.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
                 view.layoutSubtreeIfNeeded()
                 let suffix = appearance == .aqua ? "light" : "dark"
-                try write(view, to: root.appendingPathComponent("workspace-\(workspace.rawValue)-\(suffix).png"))
+                try write(view, to: root.appendingPathComponent("workspace-\(section.rawValue)-\(suffix).png"))
             }
+        }
+    }
+
+    /// The merged network page leads with whichever direction is actually
+    /// running, so both orderings need their own render.
+    @MainActor func testNetworkPageLeadsWithRunningDirection() throws {
+        _ = NSApplication.shared
+        let root = renderDirectory()
+
+        var phoneRunning = activeSnapshot()
+        phoneRunning.phoneInternet = ModuleStatus(phase: .running, stage: "USB共享已连接", detail: "")
+        var macRunning = activeSnapshot()
+        macRunning.macInternet = ModuleStatus(phase: .running, stage: "已连接", detail: "")
+
+        for (name, snapshot) in [("phone-leads", phoneRunning), ("mac-leads", macRunning)] {
+            let view = NSHostingView(
+                rootView: RootView(snapshot: snapshot, initialSection: .network, send: { _ in })
+            )
+            view.appearance = NSAppearance(named: .aqua)
+            view.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+            view.layoutSubtreeIfNeeded()
+            try write(view, to: root.appendingPathComponent("network-\(name).png"))
         }
     }
 

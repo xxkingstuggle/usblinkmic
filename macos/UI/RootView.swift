@@ -8,7 +8,7 @@ public struct RootView: View {
     private let snapshot: AppSnapshot
     private let send: (UserAction) -> Void
 
-    @State private var selectedWorkspace: Workspace = .microphone
+    @State private var selectedSection: SidebarSection = .microphone
     @State private var settingsDraft: Contracts.Settings
     @State private var settingsDirty = false
     @State private var activeSheet: RootSheet?
@@ -16,12 +16,12 @@ public struct RootView: View {
 
     public init(
         snapshot: AppSnapshot,
-        initialWorkspace: Workspace = .microphone,
+        initialSection: SidebarSection = .microphone,
         send: @escaping (UserAction) -> Void
     ) {
         self.snapshot = snapshot
         self.send = send
-        _selectedWorkspace = State(initialValue: initialWorkspace)
+        _selectedSection = State(initialValue: initialSection)
         _settingsDraft = State(initialValue: snapshot.settings)
         _activeSheet = State(initialValue: !snapshot.wizardSkipped && !snapshot.soundTestCompleted ? .wizard : nil)
     }
@@ -122,7 +122,7 @@ public struct RootView: View {
                     }
                     Divider()
                     Button("管理设备与权限…") {
-                        selectedWorkspace = .devices
+                        selectedSection = .devices
                     }
                 } label: {
                     Text(selectedDeviceSummary)
@@ -137,8 +137,7 @@ public struct RootView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 sidebarNavButton(.microphone)
-                sidebarNavButton(.phoneInternet)
-                sidebarNavButton(.macInternet)
+                sidebarNavButton(.network)
 
                 Rectangle()
                     .fill(palette.border)
@@ -163,18 +162,18 @@ public struct RootView: View {
         .background(palette.sidebarBackground)
     }
 
-    private func sidebarNavButton(_ workspace: Workspace) -> some View {
-        let isSelected = selectedWorkspace == workspace
+    private func sidebarNavButton(_ section: SidebarSection) -> some View {
+        let isSelected = selectedSection == section
         return Button {
-            selectedWorkspace = workspace
+            selectedSection = section
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: workspace.symbol)
+                Image(systemName: section.symbol)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? palette.textPrimary : palette.textSecondary)
                     .frame(width: 18)
 
-                Text(workspace.title)
+                Text(section.title)
                     .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? palette.textPrimary : palette.textSecondary)
                     .lineLimit(1)
@@ -197,12 +196,12 @@ public struct RootView: View {
 
     private var detailTopBar: some View {
         HStack(alignment: .center, spacing: 14) {
-            Text(selectedWorkspace.title)
+            Text(selectedSection.title)
                 .font(.system(size: 16, weight: .bold))
                 .foregroundStyle(palette.textPrimary)
                 .lineLimit(1)
 
-            Text(selectedWorkspace.subtitle)
+            Text(selectedSection.subtitle)
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(palette.textSecondary)
                 .lineLimit(1)
@@ -254,23 +253,15 @@ public struct RootView: View {
 
     @ViewBuilder
     private var workspaceDetailBody: some View {
-        switch selectedWorkspace {
+        switch selectedSection {
         case .microphone:
             MicrophoneWorkspaceView(
                 snapshot: snapshot,
                 send: send,
                 onOpenSettings: openSettings
             )
-        case .phoneInternet:
+        case .network:
             NetworkWorkspaceView(
-                workspace: .phoneInternet,
-                snapshot: snapshot,
-                send: send,
-                onOpenSettings: openSettings
-            )
-        case .macInternet:
-            NetworkWorkspaceView(
-                workspace: .macInternet,
                 snapshot: snapshot,
                 send: send,
                 onOpenSettings: openSettings

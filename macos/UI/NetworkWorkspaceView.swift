@@ -3,12 +3,19 @@ import Contracts
 
 struct NetworkWorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
-    let workspace: Workspace
     let snapshot: AppSnapshot
     let send: (UserAction) -> Void
     let onOpenSettings: () -> Void
 
     private var palette: ZenPalette { ZenPalette(colorScheme) }
+
+    /// Both directions share one USB NCM channel and are mutually exclusive, so
+    /// the running one leads. With neither running, phone-to-Mac leads because
+    /// it is the direction most setups start from.
+    private var macToPhoneLeads: Bool {
+        snapshot.macInternet.phase == .running && snapshot.phoneInternet.phase != .running
+            || isTaskBusy(snapshot.macInternet.phase) && !isTaskBusy(snapshot.phoneInternet.phase)
+    }
 
     private var deviceDisplayName: String {
         if let id = snapshot.selectedDeviceID,
@@ -25,18 +32,23 @@ struct NetworkWorkspaceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 ZenWorkspaceHeroHeader(
-                    eyebrow: "网络共享",
+                    eyebrow: "网络互联",
                     title: "高速有线互联",
                     subtitle: "通过原生 USB NCM 虚拟网卡通道，免安装驱动实现低延迟、零干扰的双向网络共享。"
                 )
 
-                if workspace == .phoneInternet {
-                    phoneToMacCard
+                if macToPhoneLeads {
                     macToPhoneCard
+                    phoneToMacCard
                 } else {
-                    macToPhoneCard
                     phoneToMacCard
+                    macToPhoneCard
                 }
+
+                Text("两个方向共用同一条 USB 通道，同一时间只能运行一个；切换前会先停止当前方向。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.textTertiary)
+                    .padding(.horizontal, 4)
 
                 if !snapshot.recoveryMessage.isEmpty {
                     HStack(spacing: 8) {

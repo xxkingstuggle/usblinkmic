@@ -51,7 +51,7 @@ class AndroidUiRenderTest {
     @Test
     fun renderNetworkScreen() {
         render("android-network", streamingSnapshot()) {
-            composeRule.onNodeWithText("网络共享").performClick()
+            composeRule.onNodeWithText("网络互联").performClick()
         }
     }
 
