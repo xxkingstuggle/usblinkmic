@@ -25,12 +25,55 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @SuppressLint({"NewApi", "BlockedPrivateApi", "WrongConstant"})
 public final class NcmShellCommand {
     private static final int ETHERNET = 5;
+    public static final int ROOT_UID = 0;
+    public static final int SHELL_UID = 2000;
     private NcmShellCommand() {}
+
+    public interface IdentityOps {
+        int myUid();
+        int getuid();
+        int geteuid();
+        int getgid();
+        int getegid();
+        void setgid(int gid) throws Exception;
+        void setuid(int uid) throws Exception;
+    }
+
+    private static final IdentityOps SYSTEM_IDENTITY_OPS = new IdentityOps() {
+        @Override public int myUid() { return Process.myUid(); }
+        @Override public int getuid() { return android.system.Os.getuid(); }
+        @Override public int geteuid() { return android.system.Os.geteuid(); }
+        @Override public int getgid() { return android.system.Os.getgid(); }
+        @Override public int getegid() { return android.system.Os.getegid(); }
+        @Override public void setgid(int gid) throws Exception { android.system.Os.setgid(gid); }
+        @Override public void setuid(int uid) throws Exception { android.system.Os.setuid(uid); }
+    };
+
+    public static void ensureShellProcessIdentity(IdentityOps ops) throws Exception {
+        int initialUid = ops.myUid();
+        if (initialUid == ROOT_UID) {
+            ops.setgid(SHELL_UID);
+            ops.setuid(SHELL_UID);
+            if (ops.myUid() != SHELL_UID || ops.getuid() != SHELL_UID || ops.geteuid() != SHELL_UID
+                    || ops.getgid() != SHELL_UID || ops.getegid() != SHELL_UID) {
+                throw new SecurityException("ADB_SHELL_UID_DROP_INCOMPLETE");
+            }
+        }
+        if (ops.myUid() != SHELL_UID) {
+            throw new SecurityException("ADB_SHELL_REQUIRED");
+        }
+    }
 
     public static void main(String[] args) {
         JSONObject result = new JSONObject();
         boolean ok = false;
         AtomicBoolean reported = new AtomicBoolean(false);
+        Throwable identityFailure = null;
+        try {
+            ensureShellProcessIdentity(SYSTEM_IDENTITY_OPS);
+        } catch (Throwable failure) {
+            identityFailure = failure;
+        }
         // Bound the entire helper, including a blocked ROM service lookup. No
         // shell timeout tool or permanently running service is required.
         Thread deadline = new Thread(() -> {
@@ -47,7 +90,8 @@ public final class NcmShellCommand {
         }, "linkmic-ncm-deadline");
         deadline.setDaemon(true); deadline.start();
         try {
-            if (Process.myUid() != 2000) throw new SecurityException("ADB_SHELL_REQUIRED");
+            if (identityFailure != null) throw identityFailure;
+            if (Process.myUid() != SHELL_UID) throw new SecurityException("ADB_SHELL_REQUIRED");
             if (args.length != 2 || !(args[0].equals("start") || args[0].equals("stop") || args[0].equals("status"))
                     || !args[1].matches("[A-Fa-f0-9-]{36}")) throw new IllegalArgumentException("INVALID_COMMAND");
             result.put("action", args[0]).put("session", args[1]).put("sdk", Build.VERSION.SDK_INT);

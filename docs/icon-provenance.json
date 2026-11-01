@@ -1,63 +1,63 @@
 {
-  "authorization": "User supplied replacement artwork on2026-10-17 for both platforms; supersedes legacy icon retention.",
+  "authorization": "User supplied artwork on 2026-10-17; authorized Mac icon repair on 2026-10-18. Android artwork retained.",
   "source": "assets/branding/app-icon-source.png",
   "sourceSHA256": "2cb33acd40ba7fcb3b02d54aa48275710d8f1b2774afce0601f049193cf51c24",
-  "conversion": "Mac: imagegen background removal then geometric crop/mask,102px transparent margins on1024px canvas,820px tile; system sips sizes. Android unchanged original image with12dp adaptive padding.",
+  "conversion": "Mac: AI-redrawn full-bleed square master; a single native rounded tile mask on an824px tile with100px transparent margins; system sips sizes and iconutil ICNS. Android retains the original image with12dp adaptive padding.",
   "macEditedSource": "assets/branding/mac-app-icon.png",
-  "macEditedSHA256": "e83c2d36d23090d609c2504adf6b419c77ca55fa023bbab244d61487097f5b32",
+  "macEditedSHA256": "d42bffe7e2e7632999b88e81688a3e70d69fc7a758bd302ded8ad82bab9bedae",
   "macProcessingScript": "scripts/prepare-mac-icon.swift",
   "macPreparedSource": "assets/branding/mac-app-icon-prepared.png",
-  "macPreparedSHA256": "47c785421a177c61cafd9152ad45ac75a83e0a16d68900a36435a8ead1f10bd9",
+  "macPreparedSHA256": "2114c8cb4e158dacea5f291eda95c4b03aea002836232ddb9f14e9247c1c06de",
   "assets": [
     {
       "path": "macos/Resources/AppIcon.iconset/icon_16x16.png",
       "pixels": 16,
-      "sha256": "7905818af32e083df9dc09fa0dc07e7bf38eb1a07d9125cd20bfd54723ad3e06"
+      "sha256": "798c762843550ff244b93f53d87a480cae235169536afa7d31524b07d27f1660"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_16x16@2x.png",
       "pixels": 32,
-      "sha256": "6dac618292da16efa3823d632546562c43a688abefcd09748ecd74f0cbc97cb1"
+      "sha256": "1b667f8c284d117a3f397ea0b38a9b25a4112cd514f2d2c9cfba793089f8faf6"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_32x32.png",
       "pixels": 32,
-      "sha256": "6dac618292da16efa3823d632546562c43a688abefcd09748ecd74f0cbc97cb1"
+      "sha256": "1b667f8c284d117a3f397ea0b38a9b25a4112cd514f2d2c9cfba793089f8faf6"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_32x32@2x.png",
       "pixels": 64,
-      "sha256": "a1accfa7bc01abebe5fa57eb0a994a124e02fced82b26dc103eb117e40f16633"
+      "sha256": "25a3854ecc048445cd6627c92ee15d3bd668bb6f413b93bf0f1dceaba4a80367"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_128x128.png",
       "pixels": 128,
-      "sha256": "7755ab184271cc3158927745b98f6d85b799a7c2de3482bcd80720b6783b8e59"
+      "sha256": "df2b27a7cb684e2ec73555fd91c5ef98b276020e1c394e3633dc0fe194d5ef42"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_128x128@2x.png",
       "pixels": 256,
-      "sha256": "563e1cd6cc0690a0c029ff800df3a305d80d12b1a8b6657cfad130280a0083a0"
+      "sha256": "15dceb8514b30872186d5f71d5c0e23cfd60e17475f5391fb4c53b1866454c4f"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_256x256.png",
       "pixels": 256,
-      "sha256": "563e1cd6cc0690a0c029ff800df3a305d80d12b1a8b6657cfad130280a0083a0"
+      "sha256": "15dceb8514b30872186d5f71d5c0e23cfd60e17475f5391fb4c53b1866454c4f"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_256x256@2x.png",
       "pixels": 512,
-      "sha256": "08da2cdf4485bac1e3a4f588ef926ff1afa92d1b109639f76f85ef69afed1150"
+      "sha256": "508435fe243c0fda9e167b961e6ccd9668b80f6c5320886f2a274a1b8f0f7ebe"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_512x512.png",
       "pixels": 512,
-      "sha256": "08da2cdf4485bac1e3a4f588ef926ff1afa92d1b109639f76f85ef69afed1150"
+      "sha256": "508435fe243c0fda9e167b961e6ccd9668b80f6c5320886f2a274a1b8f0f7ebe"
     },
     {
       "path": "macos/Resources/AppIcon.iconset/icon_512x512@2x.png",
       "pixels": 1024,
-      "sha256": "47c785421a177c61cafd9152ad45ac75a83e0a16d68900a36435a8ead1f10bd9"
+      "sha256": "2114c8cb4e158dacea5f291eda95c4b03aea002836232ddb9f14e9247c1c06de"
     },
     {
       "path": "android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
@@ -114,6 +114,5 @@
       "pixels": 432,
       "sha256": "0d35fbf18ced6cd914cd5e8f8f2f4c2beab0ecf1622d9a5c6ec193ddbf667435"
     }
-  ],
-  "publication": "PNG ancillary provenance, EXIF and text chunks removed; image pixels retained."
+  ]
 }

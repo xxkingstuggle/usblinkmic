@@ -4,12 +4,12 @@ android {
  namespace = "com.zjx.usblinkmic"
  compileSdk = 36
  buildToolsVersion = "35.0.0"
- defaultConfig { applicationId = "com.zjx.usblinkmic"; minSdk = 26; targetSdk = 36; versionCode = 40008; versionName = "4.0.8"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+ defaultConfig { applicationId = "com.zjx.usblinkmic"; minSdk = 26; targetSdk = 36; versionCode = 40015; versionName = "4.0.15"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
  kotlinOptions { jvmTarget = "17" }
  buildFeatures { compose = true; buildConfig = true }
  buildTypes { release { isMinifyEnabled = false } }
- testOptions { unitTests.isReturnDefaultValues = false }
+ testOptions { unitTests.isReturnDefaultValues = false; unitTests.isIncludeAndroidResources = true }
  lint { abortOnError = true; checkReleaseBuilds = true }
  packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
@@ -22,6 +22,10 @@ dependencies {
  implementation("androidx.core:core-ktx:1.16.0")
  testImplementation("junit:junit:4.13.2")
  testImplementation("org.json:json:20240303")
+ testImplementation("org.robolectric:robolectric:4.16")
+ testImplementation("androidx.test.ext:junit:1.2.1")
+ testImplementation(platform("androidx.compose:compose-bom:2025.04.01"))
+ testImplementation("androidx.compose.ui:ui-test-junit4")
  androidTestImplementation(platform("androidx.compose:compose-bom:2025.04.01"))
  androidTestImplementation("androidx.compose.ui:ui-test-junit4")
  androidTestImplementation("androidx.test.ext:junit:1.2.1")

@@ -18,9 +18,13 @@ class AdbControlActivity : Activity() {
  }
  private fun forward(command: Intent) {
   Runtime.attach(this)
-  val mode=command.getStringExtra("mode")?.takeIf{it in listOf("audio","vpn","ncm","cancel")} ?: "invalid"
+  val mode=command.getStringExtra("mode")?.takeIf{it in listOf("audio","vpn","ncm","wifi","cancel")} ?: "invalid"
   Runtime.log("control","entryReceived","受保护命令入口已执行；mode=$mode")
   try {
+   if (mode == "cancel" && Runtime.handleAdbCancel(this, command)) {
+    Runtime.log("control","cancelHandledDirect","已在受保护命令入口直接完成取消与回执准备")
+    return
+   }
    val ticket = Runtime.stageAdbCommand(command)
    // The transient control task must never become the public launcher's task identity.
    startActivity(Intent(this, MainActivity::class.java)

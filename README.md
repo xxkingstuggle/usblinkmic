@@ -26,8 +26,8 @@
 |功能|怎么用|
 |---|---|
 |手机当麦克风|通过 USB 或 Wi-Fi 传输音频，在 Mac 上试听，也能配合 BlackHole 用于会议、录音和直播。支持增益与静音。|
-|手机网络给 Mac|通过 USB NCM 共享手机网络，不必另外开 Wi-Fi 热点。|
-|Mac 网络给手机|通过 USB 把 Mac 的网络接给手机，使用 Android 系统 VPN 接口，无需 root。|
+|手机网络给 Mac|通过 USB NCM 虚拟网卡共享手机网络，不必另外开 Wi-Fi 热点。|
+|Mac 网络给手机|通过 ADB USB 端口转发与 Android 系统 VPN 接口将 Mac 网络共享给手机，无需 root。|
 
 Mac 安装包内已包含配套 APK、ADB 和转发运行时，日常使用不需要安装 Xcode、Android Studio 或 Java。
 
@@ -66,6 +66,6 @@ Mac 安装包内已包含配套 APK、ADB 和转发运行时，日常使用不�
 
 欢迎提交问题、改进建议和 Pull Request。修复兼容性问题时，请写清设备型号、系统版本和实际操作步骤。
 
-[构建指南](docs/development.md) · [接口约定](contracts/README.md) · [工作原理](docs/how-it-works.md) · [第三方依赖与许可](docs/dependencies.md)
+[构建指南](docs/development.md) · [检查与验收](docs/validation.md) · [接口约定](contracts/README.md) · [工作原理](docs/how-it-works.md) · [第三方依赖与许可](docs/dependencies.md)
 
 音频路由使用 BlackHole，USB 反向供网使用 [Gnirehtet](https://github.com/Genymobile/gnirehtet) 的转发组件。感谢这些项目提供的基础能力。
