@@ -1,7 +1,27 @@
 import Foundation
 import Darwin
 
-public struct CommandResult: Sendable { public let code: Int32; public let output: String }
+public enum ProcessTerminationReason: String, Equatable, Sendable {
+ case exit
+ case uncaughtSignal
+}
+public struct CommandResult: Equatable, Sendable {
+ public let code: Int32
+ public let output: String
+ public let terminationReason: ProcessTerminationReason
+ public let terminationSignal: Int32?
+ public init(
+  code: Int32,
+  output: String,
+  terminationReason: ProcessTerminationReason = .exit,
+  terminationSignal: Int32? = nil
+ ) {
+  self.code = code
+  self.output = output
+  self.terminationReason = terminationReason
+  self.terminationSignal = terminationSignal
+ }
+}
 public enum LinkError: LocalizedError {
  case failure(String, String)
  public var errorDescription: String? { if case let .failure(code, message) = self { return "[\(code)] \(message)" }; return nil }
@@ -124,6 +144,7 @@ internal final class ProcessExecution: @unchecked Sendable {
  private var eofReached = false
  private var processReaped = false
  private var exitCode: Int32 = 0
+ private var terminationSignal: Int32? = nil
  private var interrupted = false
  private var finalKillSent = false
  private var completed = false
@@ -351,7 +372,13 @@ internal final class ProcessExecution: @unchecked Sendable {
   if waited == pid {
    processReaped = true
    let signalCode = status & 0x7f
-   exitCode = signalCode == 0 ? ((status >> 8) & 0xff) : signalCode
+   if signalCode == 0 {
+    exitCode = (status >> 8) & 0xff
+    terminationSignal = nil
+   } else {
+    exitCode = signalCode
+    terminationSignal = signalCode
+   }
    procSource?.cancel()
    procSource = nil
   } else if waited == -1 && errno == ECHILD {
@@ -453,9 +480,11 @@ internal final class ProcessExecution: @unchecked Sendable {
   exitPollTimer?.cancel(); exitPollTimer = nil
   procSource?.cancel(); procSource = nil
   readSource?.cancel(); readSource = nil
+  let signal = interrupted ? (terminationSignal ?? Int32(SIGTERM)) : terminationSignal
+  let reason: ProcessTerminationReason = signal != nil ? .uncaughtSignal : .exit
   let code = interrupted ? (exitCode != 0 ? exitCode : Int32(SIGTERM)) : exitCode
   let output = String(decoding: outputData, as: UTF8.self)
-  resumeOnce(.success(CommandResult(code: code, output: output)))
+  resumeOnce(.success(CommandResult(code: code, output: output, terminationReason: reason, terminationSignal: signal)))
   queue.async { [weak self] in
    self?.retainedSelf = nil
   }
@@ -476,7 +505,7 @@ public enum ProcessRunner {
  public static func run(_ executable: URL, _ args: [String], timeout: TimeInterval = 20, cancellable: Bool = true) async throws -> CommandResult {
   let group = currentGroup
   if let group, !group.beginSpawn() {
-   return CommandResult(code: Int32(SIGTERM), output: "")
+   return CommandResult(code: Int32(SIGTERM), output: "", terminationReason: .uncaughtSignal, terminationSignal: Int32(SIGTERM))
   }
   let cancellation = cancellable ? ProcessCancellation() : nil
   return try await withTaskCancellationHandler(operation: {
@@ -552,19 +581,44 @@ public struct ADB {
  public func run(_ serial: String? = nil, _ args: [String], timeout: TimeInterval = 20, cancellable:Bool = false) async throws -> String {
   let arguments = (serial.map { ["-s",$0] } ?? []) + args
   let result = try await ProcessRunner.run(executable, arguments, timeout: timeout,cancellable:cancellable)
-  guard result.code == 0 else { throw LinkError.failure(Self.classify(result.output), result.output) }
+  guard result.code == 0, result.terminationReason == .exit else {
+   let code = Self.classify(result)
+   let detail = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+   let termDesc = result.terminationReason == .uncaughtSignal ? "signal=\(result.terminationSignal ?? result.code)" : "exit=\(result.code)"
+   throw LinkError.failure(code, detail.isEmpty ? "adb \(termDesc) (\(args.first ?? "cmd"))" : detail)
+  }
   return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
  }
  public static func ownsMapping(_ text:String,serial:String,local:String,remote:String)->Bool {
   text.split(separator:"\n").contains {line in let f=line.split(whereSeparator:{$0.isWhitespace}).map(String.init);return f.count>=3 && f[0]==serial && f[1]==local && f[2]==remote}
  }
- public static func classify(_ output: String) -> String {
+ public static func classify(_ result: CommandResult) -> String {
+  classify(
+   result.output,
+   exitCode: result.code,
+   terminationReason: result.terminationReason,
+   terminationSignal: result.terminationSignal
+  )
+ }
+ public static func classify(
+  _ output: String,
+  exitCode: Int32 = -1,
+  terminationReason: ProcessTerminationReason = .exit,
+  terminationSignal: Int32? = nil
+ ) -> String {
   let s=output.lowercased()
   if s.contains("update_incompatible") { return "INSTALL_SIGNATURE_CONFLICT" }
   if s.contains("version_downgrade") { return "INSTALL_DOWNGRADE" }
   if s.contains("user_restricted") || s.contains("canceled by user") || s.contains("cancelled") { return "INSTALL_DENIED" }
   if s.contains("unauthorized") { return "USB_UNAUTHORIZED" }
   if s.contains("offline") || s.contains("no devices") || s.contains("not found") { return "DEVICE_DISCONNECTED" }
+  if s.contains("failed to start daemon") || s.contains("error writing ack") || s.contains("cannot connect to daemon") || s.contains("failed to check server version") || s.contains("connection reset by peer") {
+   return "ADB_DAEMON_START_FAILED"
+  }
+  let sig = terminationSignal ?? (terminationReason == .uncaughtSignal ? exitCode : nil)
+  if terminationReason == .uncaughtSignal, let sig {
+   return sig == SIGABRT ? "ADB_PROCESS_ABORTED" : "ADB_PROCESS_SIGNALLED"
+  }
   return "ADB_FAILED"
  }
  public static func devices(_ text: String) -> [(String,String)] {

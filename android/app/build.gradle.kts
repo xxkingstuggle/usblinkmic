@@ -4,7 +4,7 @@ android {
  namespace = "com.zjx.usblinkmic"
  compileSdk = 36
  buildToolsVersion = "35.0.0"
- defaultConfig { applicationId = "com.zjx.usblinkmic"; minSdk = 26; targetSdk = 36; versionCode = 40014; versionName = "4.0.14"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+ defaultConfig { applicationId = "com.zjx.usblinkmic"; minSdk = 26; targetSdk = 36; versionCode = 40015; versionName = "4.0.15"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
  kotlinOptions { jvmTarget = "17" }
  buildFeatures { compose = true; buildConfig = true }

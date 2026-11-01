@@ -134,30 +134,131 @@ final class AudioOutputInput: @unchecked Sendable {
   if let token = activityToken { ProcessInfo.processInfo.endActivity(token) }
   if let unit = audioUnit { AudioOutputUnitStop(unit); AudioUnitUninitialize(unit); AudioComponentInstanceDispose(unit) }
  }
- public static func devices() -> [OutputDevice] {
-  var a=AudioObjectPropertyAddress(mSelector:kAudioHardwarePropertyDevices,mScope:kAudioObjectPropertyScopeGlobal,mElement:kAudioObjectPropertyElementMain)
-  var size: UInt32=0
-  guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),&a,0,nil,&size)==noErr else { return [] }
-  var ids=[AudioDeviceID](repeating:0,count:Int(size)/MemoryLayout<AudioDeviceID>.size)
-  guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),&a,0,nil,&size,&ids)==noErr else { return [] }
-  return ids.compactMap { id in
+ private nonisolated static let cacheLock = NSLock()
+ private nonisolated(unsafe) static var cachedDevices: [OutputDevice]?
+ private nonisolated(unsafe) static var cachedDefaultUID: String?
+ internal nonisolated(unsafe) static var devicesProvider: (() -> [OutputDevice])?
+ internal nonisolated(unsafe) static var defaultOutputUIDProvider: (() -> String?)?
+ internal nonisolated(unsafe) static var enumerationCount: Int = 0
+
+ public nonisolated static func invalidateDeviceCache() {
+  cacheLock.lock()
+  cachedDevices = nil
+  cachedDefaultUID = nil
+  cacheLock.unlock()
+ }
+
+ internal nonisolated static func updateDeviceCache(devices: [OutputDevice], defaultUID: String?) {
+  cacheLock.lock()
+  cachedDevices = devices
+  cachedDefaultUID = defaultUID
+  cacheLock.unlock()
+ }
+
+ public nonisolated static func devices(forceRefresh: Bool = false) -> [OutputDevice] {
+  if let provider = devicesProvider {
+   cacheLock.lock()
+   if !forceRefresh, let cached = cachedDevices {
+    cacheLock.unlock()
+    return cached
+   }
+   cacheLock.unlock()
+   let list = provider()
+   cacheLock.lock()
+   enumerationCount += 1
+   cachedDevices = list
+   cacheLock.unlock()
+   return list
+  }
+  cacheLock.lock()
+  if !forceRefresh, let cached = cachedDevices {
+   cacheLock.unlock()
+   return cached
+  }
+  cacheLock.unlock()
+  let enumerated = enumerateHardwareOutputDevices()
+  cacheLock.lock()
+  enumerationCount += 1
+  cachedDevices = enumerated
+  cacheLock.unlock()
+  return enumerated
+ }
+
+ public nonisolated static func defaultOutputUID(forceRefresh: Bool = false) -> String? {
+  if let provider = defaultOutputUIDProvider {
+   let uid = provider()
+   cacheLock.lock()
+   cachedDefaultUID = uid
+   cacheLock.unlock()
+   return uid
+  }
+  cacheLock.lock()
+  if !forceRefresh, let cached = cachedDefaultUID {
+   cacheLock.unlock()
+   return cached
+  }
+  cacheLock.unlock()
+  var address = AudioObjectPropertyAddress(
+   mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+   mScope: kAudioObjectPropertyScopeGlobal,
+   mElement: kAudioObjectPropertyElementMain
+  )
+  var device: AudioDeviceID = 0
+  var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+  guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+        device != 0,
+        isDeviceAlive(device) else {
+   return nil
+  }
+  let uid = string(device, kAudioDevicePropertyDeviceUID)
+  cacheLock.lock()
+  cachedDefaultUID = uid
+  cacheLock.unlock()
+  return uid
+ }
+
+ fileprivate nonisolated static func allOutputDeviceIDs() -> [AudioDeviceID] {
+  var a = AudioObjectPropertyAddress(
+   mSelector: kAudioHardwarePropertyDevices,
+   mScope: kAudioObjectPropertyScopeGlobal,
+   mElement: kAudioObjectPropertyElementMain
+  )
+  var size: UInt32 = 0
+  guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &size) == noErr, size > 0 else { return [] }
+  var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+  guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &size, &ids) == noErr else { return [] }
+  return ids
+ }
+
+ fileprivate nonisolated static func isDeviceAlive(_ id: AudioDeviceID) -> Bool {
+  var aliveAddress = AudioObjectPropertyAddress(
+   mSelector: kAudioDevicePropertyDeviceIsAlive,
+   mScope: kAudioObjectPropertyScopeGlobal,
+   mElement: kAudioObjectPropertyElementMain
+  )
+  guard AudioObjectHasProperty(id, &aliveAddress) else { return true }
+  var alive: UInt32 = 1
+  var size = UInt32(MemoryLayout<UInt32>.size)
+  guard AudioObjectGetPropertyData(id, &aliveAddress, 0, nil, &size, &alive) == noErr else { return true }
+  return alive != 0
+ }
+
+ private nonisolated static func enumerateHardwareOutputDevices() -> [OutputDevice] {
+  return allOutputDeviceIDs().compactMap { id in
+   guard isDeviceAlive(id) else { return nil }
    var streams=AudioObjectPropertyAddress(mSelector:kAudioDevicePropertyStreams,mScope:kAudioDevicePropertyScopeOutput,mElement:kAudioObjectPropertyElementMain); var count: UInt32=0
    guard AudioObjectGetPropertyDataSize(id,&streams,0,nil,&count)==noErr, count>0 else { return nil }
    guard let uid=string(id,kAudioDevicePropertyDeviceUID),let name=string(id,kAudioObjectPropertyName) else { return nil }
    return OutputDevice(id:uid,name:name,isVirtual:name.lowercased().contains("blackhole"))
   }
  }
- private static func string(_ id: AudioDeviceID,_ selector: AudioObjectPropertySelector) -> String? {
+ private nonisolated static func string(_ id: AudioDeviceID,_ selector: AudioObjectPropertySelector) -> String? {
   var a=AudioObjectPropertyAddress(mSelector:selector,mScope:kAudioObjectPropertyScopeGlobal,mElement:kAudioObjectPropertyElementMain)
   var value: Unmanaged<CFString>?=nil; var size=UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
   guard AudioObjectGetPropertyData(id,&a,0,nil,&size,&value)==noErr else { return nil }; return value?.takeRetainedValue() as String?
  }
- private static func deviceID(_ uid: String) -> AudioDeviceID? {
-  var a=AudioObjectPropertyAddress(mSelector:kAudioHardwarePropertyDevices,mScope:kAudioObjectPropertyScopeGlobal,mElement:kAudioObjectPropertyElementMain); var n:UInt32=0
-  guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),&a,0,nil,&n)==0 else {return nil}
-  var ids=[AudioDeviceID](repeating:0,count:Int(n)/4)
-  guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),&a,0,nil,&n,&ids)==0 else {return nil}
-  return ids.first { string($0,kAudioDevicePropertyDeviceUID)==uid }
+ private nonisolated static func deviceID(_ uid: String) -> AudioDeviceID? {
+  return allOutputDeviceIDs().first { isDeviceAlive($0) && string($0,kAudioDevicePropertyDeviceUID)==uid }
  }
  private func createAndStartUnit(_ settings: Settings, buffer: PCMPlaybackBuffer) throws -> AudioUnit {
   let requestedDevice: AudioDeviceID?
@@ -266,5 +367,189 @@ final class AudioOutputInput: @unchecked Sendable {
   if let unit=audioUnit {AudioOutputUnitStop(unit);lastStatistics=statistics;lastSampleRate=parameters?.sampleRate ?? lastSampleRate;AudioUnitUninitialize(unit);AudioComponentInstanceDispose(unit)}
   else {lastStatistics=statistics;lastSampleRate=parameters?.sampleRate ?? lastSampleRate}
   audioUnit=nil;playback=nil;parameters=nil;input=nil
+ }
+}
+
+public struct AudioDeviceSnapshot: Equatable, Sendable {
+ public let devices: [OutputDevice]
+ public let defaultOutputUID: String?
+ public init(devices: [OutputDevice], defaultOutputUID: String?) {
+  self.devices = devices
+  self.defaultOutputUID = defaultOutputUID
+ }
+}
+
+public final class AudioDeviceObserver: @unchecked Sendable {
+ private let queue = DispatchQueue(label: "usblinkmic.coreaudio.observer", qos: .utility)
+ private let lock = NSLock()
+ private var started = false
+ private var stopped = false
+ private var coalesceWorkItem: DispatchWorkItem?
+ private var lastSnapshot: AudioDeviceSnapshot?
+ private var systemListeners: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+ private var deviceListeners: [AudioDeviceID: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)]] = [:]
+ private let onChange: @MainActor @Sendable (AudioDeviceSnapshot) -> Void
+
+ public init(onChange: @escaping @MainActor @Sendable (AudioDeviceSnapshot) -> Void) {
+  self.onChange = onChange
+ }
+
+ deinit {
+  stop()
+ }
+
+ public func start() {
+  queue.async { [weak self] in
+   self?.startOnQueue()
+  }
+ }
+
+ public func stop() {
+  lock.lock()
+  if stopped {
+   lock.unlock()
+   return
+  }
+  stopped = true
+  coalesceWorkItem?.cancel()
+  coalesceWorkItem = nil
+  lock.unlock()
+
+  queue.sync {
+   removeAllListenersOnQueue()
+  }
+ }
+
+ public func notifyManualRefresh() {
+  queue.async { [weak self] in
+   self?.emitSnapshotOnQueue(force: true)
+  }
+ }
+
+ private func startOnQueue() {
+  lock.lock()
+  guard !started && !stopped else {
+   lock.unlock()
+   return
+  }
+  started = true
+  lock.unlock()
+
+  let systemObject = AudioObjectID(kAudioObjectSystemObject)
+  let selectors: [AudioObjectPropertySelector] = [
+   kAudioHardwarePropertyDevices,
+   kAudioHardwarePropertyDefaultOutputDevice,
+   kAudioHardwarePropertyDefaultSystemOutputDevice
+  ]
+  for selector in selectors {
+   var address = AudioObjectPropertyAddress(
+    mSelector: selector,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain
+   )
+   let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+    self?.scheduleCoalescedRefreshOnQueue()
+   }
+   if AudioObjectAddPropertyListenerBlock(systemObject, &address, queue, block) == noErr {
+    systemListeners.append((address, block))
+   }
+  }
+  syncDeviceListenersOnQueue()
+  emitSnapshotOnQueue(force: true)
+ }
+
+ private func scheduleCoalescedRefreshOnQueue() {
+  lock.lock()
+  guard !stopped else {
+   lock.unlock()
+   return
+  }
+  coalesceWorkItem?.cancel()
+  let item = DispatchWorkItem { [weak self] in
+   guard let self else { return }
+   self.syncDeviceListenersOnQueue()
+   self.emitSnapshotOnQueue(force: false)
+  }
+  coalesceWorkItem = item
+  lock.unlock()
+  queue.asyncAfter(deadline: .now() + .milliseconds(35), execute: item)
+ }
+
+ private func syncDeviceListenersOnQueue() {
+  let currentIDs = Set(AudioOutput.allOutputDeviceIDs())
+  let existingIDs = Set(deviceListeners.keys)
+
+  for removedID in existingIDs.subtracting(currentIDs) {
+   if let pairs = deviceListeners.removeValue(forKey: removedID) {
+    for (addr, block) in pairs {
+     var address = addr
+     _ = AudioObjectRemovePropertyListenerBlock(removedID, &address, queue, block)
+    }
+   }
+  }
+
+  for addedID in currentIDs.subtracting(existingIDs) {
+   let properties: [(AudioObjectPropertySelector, AudioObjectPropertyScope)] = [
+    (kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal),
+    (kAudioDevicePropertyStreams, kAudioObjectPropertyScopeOutput),
+    (kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal)
+   ]
+   var registered: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+   for (selector, scope) in properties {
+    var address = AudioObjectPropertyAddress(
+     mSelector: selector,
+     mScope: scope,
+     mElement: kAudioObjectPropertyElementMain
+    )
+    guard AudioObjectHasProperty(addedID, &address) else { continue }
+    let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+     self?.scheduleCoalescedRefreshOnQueue()
+    }
+    if AudioObjectAddPropertyListenerBlock(addedID, &address, queue, block) == noErr {
+     registered.append((address, block))
+    }
+   }
+   if !registered.isEmpty {
+    deviceListeners[addedID] = registered
+   }
+  }
+ }
+
+ private func emitSnapshotOnQueue(force: Bool) {
+  lock.lock()
+  let isStopped = stopped
+  lock.unlock()
+  guard !isStopped else { return }
+
+  let devices = AudioOutput.devices(forceRefresh: true)
+  let defaultUID = AudioOutput.defaultOutputUID(forceRefresh: true)
+  AudioOutput.updateDeviceCache(devices: devices, defaultUID: defaultUID)
+  let snapshot = AudioDeviceSnapshot(devices: devices, defaultOutputUID: defaultUID)
+
+  if !force && snapshot == lastSnapshot {
+   return
+  }
+  lastSnapshot = snapshot
+  let callback = onChange
+  Task { @MainActor in
+   callback(snapshot)
+  }
+ }
+
+ private func removeAllListenersOnQueue() {
+  let systemObject = AudioObjectID(kAudioObjectSystemObject)
+  for (addr, block) in systemListeners {
+   var address = addr
+   _ = AudioObjectRemovePropertyListenerBlock(systemObject, &address, queue, block)
+  }
+  systemListeners.removeAll()
+
+  for (deviceID, pairs) in deviceListeners {
+   for (addr, block) in pairs {
+    var address = addr
+    _ = AudioObjectRemovePropertyListenerBlock(deviceID, &address, queue, block)
+   }
+  }
+  deviceListeners.removeAll()
  }
 }

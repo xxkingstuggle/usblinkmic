@@ -102,11 +102,30 @@ fun LinkMicScreen(snapshot: AppSnapshot, onAction: (UserAction) -> Unit) {
     var showLogs by remember { mutableStateOf(false) }
     var baselineSettings by remember { mutableStateOf(snapshot.settings) }
     var draft by remember { mutableStateOf(SettingsDraft.from(snapshot.settings)) }
+    var awaitingSaveCompletion by remember { mutableStateOf(false) }
+
+    LaunchedEffect(snapshot.settingsSavedRevision) {
+        if (snapshot.settingsSavedRevision > 0L) {
+            if (awaitingSaveCompletion || draft == SettingsDraft.from(baselineSettings)) {
+                baselineSettings = snapshot.settings
+                draft = SettingsDraft.from(snapshot.settings)
+                awaitingSaveCompletion = false
+            }
+        }
+    }
+
+    LaunchedEffect(snapshot.isSavingSettings, snapshot.settingsError) {
+        if (!snapshot.isSavingSettings && snapshot.settingsError != null) {
+            awaitingSaveCompletion = false
+        }
+    }
 
     LaunchedEffect(snapshot.settings) {
         val draftWasClean = draft == SettingsDraft.from(baselineSettings)
         baselineSettings = snapshot.settings
-        if (draftWasClean) draft = SettingsDraft.from(snapshot.settings)
+        if (draftWasClean && !awaitingSaveCompletion && !snapshot.isSavingSettings && snapshot.settingsError == null) {
+            draft = SettingsDraft.from(snapshot.settings)
+        }
     }
 
     val settingsDirty = draft != SettingsDraft.from(baselineSettings)
@@ -165,6 +184,7 @@ fun LinkMicScreen(snapshot: AppSnapshot, onAction: (UserAction) -> Unit) {
                             palette = palette,
                             onBack = { showLogs = false },
                             onClear = { onAction(UserAction.ClearLogs) },
+                            onExport = { onAction(UserAction.ExportLogs) },
                         )
                     } else {
                         SettingsPage(
@@ -174,8 +194,18 @@ fun LinkMicScreen(snapshot: AppSnapshot, onAction: (UserAction) -> Unit) {
                             baseline = baselineSettings,
                             dirty = settingsDirty,
                             palette = palette,
-                            onCancel = { draft = SettingsDraft.from(baselineSettings) },
-                            onSave = { settings -> onAction(UserAction.SaveSettings(settings)) },
+                            onCancel = {
+                                if (!snapshot.isSavingSettings) {
+                                    draft = SettingsDraft.from(baselineSettings)
+                                    awaitingSaveCompletion = false
+                                }
+                            },
+                            onSave = { settings ->
+                                if (!snapshot.isSavingSettings) {
+                                    awaitingSaveCompletion = true
+                                    onAction(UserAction.SaveSettings(settings))
+                                }
+                            },
                             onOpenLogs = { showLogs = true },
                             onAction = onAction,
                         )
@@ -435,25 +465,15 @@ private fun NetworkPage(
     ) {
         PageHeader(
             palette = palette,
-            title = "高速有线互联",
-            subtitle = "免热点 · 免驱动 · USB 原生网络共享",
+            title = "USB 有线网络共享",
+            subtitle = "提供「手机网络给 Mac (USB NCM)」与「Mac 网络给手机 (ADB 隧道 + VPN)」两种互斥有线方式",
         )
 
-        // Both directions share one USB NCM channel and are mutually exclusive,
-        // so whichever is actually running leads the page.
-        val macLeads = snapshot.macInternet.phase == TaskPhase.RUNNING &&
-            snapshot.phoneInternet.phase != TaskPhase.RUNNING
-
-        if (macLeads) {
-            MacToPhoneCard(snapshot, palette, onAction)
-            PhoneToMacCard(snapshot, palette)
-        } else {
-            PhoneToMacCard(snapshot, palette)
-            MacToPhoneCard(snapshot, palette, onAction)
-        }
+        PhoneToMacCard(snapshot, palette)
+        MacToPhoneCard(snapshot, palette, onAction)
 
         Text(
-            text = "两个方向共用同一条 USB 通道，同一时间只能运行一个。",
+            text = "两个方向共用同一条 USB 通道，同一时间只能运行一个。链路就绪仅代表本地接口或隧道已建立，不等同于公网出口已验证。",
             fontSize = 11.5.sp,
             color = palette.textTertiary,
             modifier = Modifier.padding(horizontal = 4.dp),
@@ -472,7 +492,7 @@ private fun PhoneToMacCard(snapshot: AppSnapshot, palette: ZenPalette) {
         TaskPhase.CONNECTING -> 2
         TaskPhase.RUNNING, TaskPhase.STOPPING -> 3
     }
-    val steps = listOf("① USB 就绪", "② NCM 激活", "③ 地址分配", "④ 出口连通")
+    val steps = listOf("① USB 就绪", "② NCM 激活", "③ 地址分配", "④ 链路就绪")
 
     ZenCard(palette, active = running) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -480,9 +500,9 @@ private fun PhoneToMacCard(snapshot: AppSnapshot, palette: ZenPalette) {
                 Text("手机网络给 Mac", fontSize = 19.sp, fontWeight = FontWeight.Bold, color = palette.textPrimary)
                 Text(
                     text = when {
-                        running -> "Mac 正在通过手机网络上网"
+                        running -> "USB NCM 网卡与本地地址已就绪；公网出口取决于手机上游网络"
                         status.detail.isNotBlank() && status.phase != TaskPhase.STOPPED -> status.detail
-                        else -> "通过原生 USB NCM 虚拟网卡，把手机网络共享给 Mac"
+                        else -> "通过 Android USB NCM 虚拟网卡，把手机蜂窝或 Wi-Fi 网络共享给 Mac"
                     },
                     fontSize = 12.5.sp,
                     color = palette.textSecondary,
@@ -520,7 +540,7 @@ private fun PhoneToMacCard(snapshot: AppSnapshot, palette: ZenPalette) {
         Spacer(Modifier.height(12.dp))
 
         Text(
-            text = "由 Mac 端发起与停止；手机端只报告当前链路状态。",
+            text = "由 Mac 端发起与停止；手机端报告本地 NCM 链路状态。",
             fontSize = 11.5.sp,
             color = palette.textTertiary,
         )
@@ -543,9 +563,9 @@ private fun MacToPhoneCard(
                 Text("Mac 网络给手机", fontSize = 19.sp, fontWeight = FontWeight.Bold, color = palette.textPrimary)
                 Text(
                     text = when {
-                        running -> "正在通过 USB 隧道使用 Mac 网络"
+                        running -> "ADB USB 转发与手机 VPN 隧道已建立；外网连通取决于 Mac 出口"
                         status.detail.isNotBlank() && status.phase != TaskPhase.STOPPED -> status.detail
-                        else -> "把 Mac 的 Wi-Fi 或有线网络通过 USB 隧道提供给手机"
+                        else -> "通过 ADB USB 端口转发与手机 VPN 服务，将 Mac 网络转发给手机"
                     },
                     fontSize = 12.5.sp,
                     color = palette.textSecondary,
@@ -633,7 +653,7 @@ private fun SettingsPage(
             subtitle = "控制音频引擎、通信参数与安卓底层权限",
         )
 
-        ZenGroup(palette, "Wi-Fi 麦克风") {
+        ZenGroup(palette, "Wi-Fi 麦克风（连接 Mac 接收端）") {
             ZenFieldRow(
                 palette,
                 label = "Mac 目标地址",
@@ -644,7 +664,7 @@ private fun SettingsPage(
             )
             ZenFieldRow(
                 palette,
-                label = "音频端口",
+                label = "Mac 接收端口",
                 value = draft.audioPort,
                 onValueChange = { onDraftChange(draft.copy(audioPort = it)) },
                 tag = "audio-port",
@@ -652,7 +672,7 @@ private fun SettingsPage(
             )
             ZenFieldRow(
                 palette,
-                label = "控制端口",
+                label = "USB 控制端口",
                 value = draft.controlPort,
                 onValueChange = { onDraftChange(draft.copy(controlPort = it)) },
                 tag = "control-port",
@@ -665,7 +685,7 @@ private fun SettingsPage(
             )
         }
 
-        ZenGroup(palette, "音频采集") {
+        ZenGroup(palette, "音频采集规格") {
             ZenChoiceRow(
                 palette,
                 title = "采样率",
@@ -701,7 +721,7 @@ private fun SettingsPage(
             )
         }
 
-        ZenGroup(palette, "网络共享") {
+        ZenGroup(palette, "Mac 网络给手机 (VPN 隧道参数)") {
             ZenFieldRow(
                 palette,
                 label = "DNS IPv4",
@@ -719,6 +739,34 @@ private fun SettingsPage(
             )
         }
 
+        if (!snapshot.settingsError.isNullOrBlank()) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = palette.red.copy(alpha = if (palette.isDark) 0.16f else 0.07f),
+                modifier = Modifier.testTag("settings-save-error"),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("保存设置失败", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = palette.red)
+                    Text(snapshot.settingsError, fontSize = 12.sp, color = palette.red)
+                }
+            }
+        } else if (snapshot.isSavingSettings && snapshot.settingsMessage.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = palette.card,
+                border = BorderStroke(1.dp, palette.border),
+                modifier = Modifier.testTag("settings-saving-banner"),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(snapshot.settingsMessage, fontSize = 12.5.sp, color = palette.textSecondary)
+                }
+            }
+        }
+
         if (errors.isNotEmpty()) {
             Surface(
                 shape = RoundedCornerShape(16.dp),
@@ -731,20 +779,25 @@ private fun SettingsPage(
             }
         }
 
+        val canRetryOrSave = (dirty || !snapshot.settingsError.isNullOrBlank()) &&
+            !snapshot.isSavingSettings &&
+            parsedSettings != null &&
+            errors.isEmpty()
+
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
                 text = "取消草稿",
                 fontSize = 13.sp,
-                color = if (dirty) palette.textSecondary else palette.textTertiary,
+                color = if (dirty && !snapshot.isSavingSettings) palette.textSecondary else palette.textTertiary,
                 modifier = Modifier
                     .clip(CircleShape)
-                    .clickable(enabled = dirty, onClick = onCancel)
+                    .clickable(enabled = dirty && !snapshot.isSavingSettings, onClick = onCancel)
                     .padding(horizontal = 14.dp, vertical = 10.dp),
             )
             ZenPrimaryButton(
-                title = "保存设置",
+                title = if (snapshot.isSavingSettings) "正在保存…" else "保存设置",
                 palette = palette,
-                enabled = dirty && parsedSettings != null && errors.isEmpty(),
+                enabled = canRetryOrSave,
                 modifier = Modifier
                     .weight(1f)
                     .testTag("save-settings"),
@@ -850,6 +903,7 @@ private fun LogsPage(
     palette: ZenPalette,
     onBack: () -> Unit,
     onClear: () -> Unit,
+    onExport: () -> Unit = {},
 ) {
     var filter by remember { mutableStateOf(LogFilter.ALL) }
     val filtered = logs.asReversed().filter { filter.matches(it.module) }
@@ -877,6 +931,17 @@ private fun LogsPage(
                 Text("手机端底层音频与通讯管道实时事件", fontSize = 13.sp, color = palette.textSecondary)
             }
             Text(
+                text = "导出",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.blue,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable(onClick = onExport)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .testTag("export-logs"),
+            )
+            Text(
                 text = "清空",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -884,7 +949,7 @@ private fun LogsPage(
                 modifier = Modifier
                     .clip(CircleShape)
                     .clickable(enabled = logs.isNotEmpty(), onClick = onClear)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
             )
         }
 

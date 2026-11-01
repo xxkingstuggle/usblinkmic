@@ -43,11 +43,13 @@ public struct MenuBarLabelView: View {
 public struct MenuBarConsoleView: View {
     @Environment(\.colorScheme) private var colorScheme
     private let snapshot: AppSnapshot
+    private let telemetry: AudioTelemetry?
     private let send: (UserAction) -> Void
     @Environment(\.openWindow) private var openWindow
 
-    public init(snapshot: AppSnapshot, send: @escaping (UserAction) -> Void) {
+    public init(snapshot: AppSnapshot, telemetry: AudioTelemetry? = nil, send: @escaping (UserAction) -> Void) {
         self.snapshot = snapshot
+        self.telemetry = telemetry
         self.send = send
     }
 
@@ -168,16 +170,20 @@ public struct MenuBarConsoleView: View {
             }
 
             if isMicRunning {
-                let bars = ZenWaveformWell.normalizedBars(from: snapshot.waveform, level: snapshot.level, targetCount: 20)
                 VStack(alignment: .trailing, spacing: 4) {
-                    HStack(alignment: .center, spacing: 7) {
-                        ForEach(Array(bars.enumerated()), id: \.offset) { idx, amp in
-                            Capsule()
-                                .fill(palette.waveBarBlue.opacity(idx.isMultiple(of: 3) ? 0.78 : 1.0))
-                                .frame(width: 4.5, height: max(6, CGFloat(amp) * 44))
+                    if let telemetry {
+                        ObservedMenuBarWaveform(telemetry: telemetry)
+                    } else {
+                        let bars = ZenWaveformWell.normalizedBars(from: snapshot.waveform, level: snapshot.level, targetCount: 20)
+                        HStack(alignment: .center, spacing: 7) {
+                            ForEach(Array(bars.enumerated()), id: \.offset) { idx, amp in
+                                Capsule()
+                                    .fill(palette.waveBarBlue.opacity(idx.isMultiple(of: 3) ? 0.78 : 1.0))
+                                    .frame(width: 4.5, height: max(6, CGFloat(amp) * 44))
+                            }
                         }
+                        .frame(maxWidth: .infinity, minHeight: 46)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 46)
 
                     Text(dbText)
                         .font(.system(size: 11, weight: .bold).monospacedDigit())
@@ -212,7 +218,7 @@ public struct MenuBarConsoleView: View {
                         .foregroundStyle(palette.textPrimary)
 
                     if isAnyNetRunning {
-                        Text(isPhoneNetRunning ? "NCM 链路已激活" : "USB 隧道已连通")
+                        Text(isPhoneNetRunning ? "NCM 链路已就绪" : "USB 隧道与 VPN 已建立")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(palette.accentBlue)
                     } else {
@@ -249,7 +255,7 @@ public struct MenuBarConsoleView: View {
                 .buttonStyle(.plain)
             }
 
-            Text(isAnyNetRunning ? "已连接 · USB NCM" : "模式：USB NCM 互联")
+            Text(isAnyNetRunning ? (isPhoneNetRunning ? "已连接 · USB NCM 网卡" : "已连接 · ADB 隧道 + VPN") : "模式：手机给 Mac (NCM) / Mac 给手机 (VPN)")
                 .font(.system(size: 11))
                 .foregroundStyle(palette.textSecondary)
         }
@@ -303,6 +309,33 @@ public struct MenuBarConsoleView: View {
                     .foregroundStyle(palette.textSecondary)
             }
             .buttonStyle(.plain)
+        }
+    }
+}
+
+private struct ObservedMenuBarWaveform: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var telemetry: AudioTelemetry
+    @State private var consumerID = UUID()
+
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
+
+    var body: some View {
+        let bars = ZenWaveformWell.normalizedBars(from: telemetry.waveform, level: telemetry.level, targetCount: 20)
+        HStack(alignment: .center, spacing: 7) {
+            ForEach(Array(bars.enumerated()), id: \.offset) { idx, amp in
+                Capsule()
+                    .fill(palette.waveBarBlue.opacity(idx.isMultiple(of: 3) ? 0.78 : 1.0))
+                    .frame(width: 4.5, height: max(6, CGFloat(amp) * 44))
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 46)
+        .background(TelemetryVisibilityObserver(telemetry: telemetry, consumerID: consumerID))
+        .onAppear {
+            telemetry.registerConsumer(consumerID)
+        }
+        .onDisappear {
+            telemetry.unregisterConsumer(consumerID)
         }
     }
 }

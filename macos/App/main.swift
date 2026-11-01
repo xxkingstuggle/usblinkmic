@@ -8,32 +8,34 @@ import UI
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {
-        WindowGroup("USB LinkMic", id: "main") {
-            RootView(snapshot: controller.snapshot, send: controller.send)
-                .frame(minWidth: 860, minHeight: 580)
-                .ignoresSafeArea(.container, edges: .top)
-                .onAppear {
-                    delegate.controller = controller
-                    controller.boot()
-                }
+        Window("USB LinkMic", id: "main") {
+            RootView(
+                snapshot: controller.snapshot,
+                telemetry: controller.telemetry,
+                send: { controller.send($0, source: .ui) }
+            )
+            .frame(minWidth: 860, minHeight: 580)
+            .ignoresSafeArea(.container, edges: .top)
+            .onAppear {
+                delegate.controller = controller
+                controller.boot()
+            }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1120, height: 720)
         .commands {
-            CommandGroup(after: .appSettings) {
-                Button("偏好设置…") {
-                    NotificationCenter.default.post(name: Notification.Name("USBLinkMic.showSettings"), object: nil)
-                }
-                .keyboardShortcut(",")
-            }
             CommandMenu("连接") {
-                Button("刷新") { controller.send(.refresh) }.keyboardShortcut("r")
-                Button("全部停止") { controller.send(.stopAll) }.keyboardShortcut(".")
+                Button("刷新") { controller.send(.refresh, source: .ui) }.keyboardShortcut("r")
+                Button("全部停止") { controller.send(.stopAll, source: .ui) }.keyboardShortcut(".")
             }
         }
 
         MenuBarExtra {
-            MenuBarConsoleView(snapshot: controller.snapshot, send: controller.send)
+            MenuBarConsoleView(
+                snapshot: controller.snapshot,
+                telemetry: controller.telemetry,
+                send: { controller.send($0, source: .menuBar) }
+            )
         } label: {
             MenuBarLabelView(snapshot: controller.snapshot)
         }

@@ -47,15 +47,26 @@ class LinkVpnService : VpnService() {
  private fun connectionLoop(r:Request) {
   val cm=getSystemService(ConnectivityManager::class.java)
   var startup=0
+  var connectedLogged=false
+  val startMs=SystemClock.elapsedRealtime()
+  var lastHealthMs=startMs
   while(!closed && !r.cancelled && Runtime.vpnRequest===r){
    try {
     val network=cm.allNetworks.firstOrNull { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true }
     if(network==null || !tunnelConnected){check(startup++<15){"VPN_NETWORK_TIMEOUT"};Thread.sleep(1000);continue}
-    if(!closed && !r.cancelled)Runtime.update{it.copy(macInternet=ModuleStatus(TaskPhase.RUNNING,"已连接","VPN接口和USB转发通道已就绪"))}
+    val nowMs=SystemClock.elapsedRealtime()
+    if(!connectedLogged){
+     connectedLogged=true
+     Runtime.log("vpn","tunnelEstablished","VPN接口与USB转发隧道已建立；实际外网可用性取决于Mac出口",session=r.session,elapsedMs=(nowMs-startMs).coerceAtLeast(0L))
+    } else if(nowMs-lastHealthMs>=45_000L){
+     lastHealthMs=nowMs
+     Runtime.log("vpn","healthSummary","tunnelConnected=true vpnActive=true",session=r.session,elapsedMs=(nowMs-startMs).coerceAtLeast(0L))
+    }
+    if(!closed && !r.cancelled)Runtime.update{it.copy(macInternet=ModuleStatus(TaskPhase.RUNNING,"隧道已建立","VPN接口与USB转发隧道已就绪；外网连通取决于Mac当前出口"))}
     Thread.sleep(5000)
-   }catch(e:Exception){if(!closed && !r.cancelled){Runtime.fail(r,"VPN_CONNECTION: ${e.message}");stopSelf()};return}
+   }catch(e:Exception){if(!closed && !r.cancelled){Runtime.fail(r,"VPN_CONNECTION: ${e.message}",source="vpn");stopSelf()};return}
   }
  }
- override fun onRevoke(){request?.let{Runtime.fail(it,"VPN_REVOKED: 系统收回VPN授权")};stopSelf();super.onRevoke()}
- override fun onDestroy(){closed=true;try{forwarder?.stop()}catch(e:Exception){Runtime.log("vpn","cleanup",e.message ?: "转发关闭异常")};forwarder=null;try{tun?.close()}catch(e:Exception){Runtime.log("vpn","cleanup",e.message ?: "VPN关闭异常")};tun=null;request?.cancelled=true;if(Runtime.vpnRequest===request)Runtime.vpnRequest=null;Runtime.update{if(it.macInternet.phase==TaskPhase.FAILED)it else it.copy(macInternet=ModuleStatus())};super.onDestroy()}
+ override fun onRevoke(){request?.let{Runtime.fail(it,"VPN_REVOKED: 系统收回VPN授权",source="system")};stopSelf();super.onRevoke()}
+ override fun onDestroy(){closed=true;request?.let{Runtime.log("vpn","sessionEnd","VPN服务结束 cancelled=${it.cancelled} error=${it.error.ifBlank{"none"}}",session=it.session)};try{forwarder?.stop()}catch(e:Exception){Runtime.log("vpn","cleanup",e.message ?: "转发关闭异常")};forwarder=null;try{tun?.close()}catch(e:Exception){Runtime.log("vpn","cleanup",e.message ?: "VPN关闭异常")};tun=null;request?.cancelled=true;if(Runtime.vpnRequest===request)Runtime.vpnRequest=null;Runtime.update{if(it.macInternet.phase==TaskPhase.FAILED)it else it.copy(macInternet=ModuleStatus())};super.onDestroy()}
 }

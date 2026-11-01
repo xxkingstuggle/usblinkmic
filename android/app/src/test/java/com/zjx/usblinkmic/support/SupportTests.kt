@@ -3,10 +3,13 @@ package com.zjx.usblinkmic.support
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
+import com.zjx.usblinkmic.contracts.AppSnapshot
 import com.zjx.usblinkmic.contracts.AudioParameters
 import com.zjx.usblinkmic.contracts.Settings
 import com.zjx.usblinkmic.platform.CapabilityProvider
 import com.zjx.usblinkmic.platform.NcmShellCommand
+import com.zjx.usblinkmic.platform.Runtime
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -389,6 +392,128 @@ class SupportTests {
         }
         assertTrue("Expected ordinary app UID to be rejected with ADB_SHELL_REQUIRED", appRejected)
         assertTrue(appCalls.isEmpty())
+    }
+
+    @Test
+    fun wifiHostSyncPreservesUserLanTargetAndRejectsLoopbackOrVpnAddresses() {
+        for (invalid in listOf(
+            "127.0.0.1",
+            "localhost",
+            "localhost.",
+            "LOCALHOST.",
+            "router.localhost",
+            "router.localhost.",
+            "sub.router.localhost.",
+            "0.0.0.0",
+            "255.255.255.255",
+            "169.254.1.2",
+            "10.0.0.2",
+            "224.0.0.1"
+        )) {
+            assertFalse("Invalid Wi-Fi target $invalid must be rejected", SettingsValidator.isUsableWifiTargetHost(invalid))
+            assertTrue(SettingsValidator.errors(Settings(wifiHost = invalid)).any { it.startsWith("wifiHost") })
+        }
+        for (valid in listOf("192.168.1.10", "10.0.1.5", "172.16.0.2", "macbook.local", "macbook.local.")) {
+            assertTrue("Valid Wi-Fi target $valid must be accepted", SettingsValidator.isUsableWifiTargetHost(valid))
+        }
+
+        // Auto-detected USB sync IP must NOT overwrite user's existing valid LAN wifiHost when incomingExplicit is false
+        assertEquals(
+            "192.168.1.99",
+            SettingsValidator.resolveSyncedWifiHost(
+                existingHost = "192.168.1.99",
+                incomingHost = "172.16.42.1",
+                incomingExplicit = false
+            )
+        )
+        // Explicit user-configured wifiHost from Mac updates the synced target
+        assertEquals(
+            "192.168.1.88",
+            SettingsValidator.resolveSyncedWifiHost(
+                existingHost = "192.168.1.99",
+                incomingHost = "192.168.1.88",
+                incomingExplicit = true
+            )
+        )
+        // Invalid incoming host (e.g. VPN 10.0.0.2 or loopback) never overwrites existing valid target
+        assertEquals(
+            "192.168.1.99",
+            SettingsValidator.resolveSyncedWifiHost(
+                existingHost = "192.168.1.99",
+                incomingHost = "10.0.0.2",
+                incomingExplicit = true
+            )
+        )
+    }
+
+    @Test
+    fun affectsAudioAndApplySettingsSaveHandleUsbIsolationAndSaveErrorRetry() {
+        val base = Settings()
+        val wifiEdited = base.copy(
+            wifiHost = "192.168.1.77",
+            pairingCode = "00112233445566778899aabbccddeeff"
+        )
+        assertFalse(
+            "Wi-Fi-only edits must not affect active USB audio",
+            SettingsValidator.affectsAudio(base, wifiEdited, activeMode = "audio")
+        )
+        assertTrue(
+            "Wi-Fi edits must affect active Wi-Fi audio",
+            SettingsValidator.affectsAudio(base, wifiEdited, activeMode = "wifi")
+        )
+        assertTrue(
+            "Sample rate changes must affect active USB audio",
+            SettingsValidator.affectsAudio(
+                base,
+                base.copy(audio = AudioParameters(sampleRate = 48000)),
+                activeMode = "audio"
+            )
+        )
+
+        // 1. Persistence failure surfaces settingsError, keeps baseline settings, and does not increment revision
+        val initialSnapshot = AppSnapshot(settings = base)
+        var audioStoppedCount = 0
+        val failedSnapshot = SettingsValidator.applySettingsSave(
+            current = initialSnapshot,
+            newSettings = wifiEdited,
+            activeAudioMode = "audio",
+            persist = { throw IllegalStateException("Unable to persist settings") },
+            onStopAudio = { audioStoppedCount += 1 }
+        )
+        assertFalse(failedSnapshot.isSavingSettings)
+        assertEquals("Unable to persist settings", failedSnapshot.settingsError)
+        assertEquals(base, failedSnapshot.settings)
+        assertEquals(0L, failedSnapshot.settingsSavedRevision)
+        assertEquals(0, audioStoppedCount)
+
+        // 2. Retrying save with working persistence clears settingsError, updates settings, and does not stop USB audio for Wi-Fi-only edits
+        val retriedSnapshot = SettingsValidator.applySettingsSave(
+            current = failedSnapshot,
+            newSettings = wifiEdited,
+            activeAudioMode = "audio",
+            persist = { },
+            onStopAudio = { audioStoppedCount += 1 }
+        )
+        assertFalse(retriedSnapshot.isSavingSettings)
+        assertEquals(null, retriedSnapshot.settingsError)
+        assertEquals(wifiEdited, retriedSnapshot.settings)
+        assertEquals(1L, retriedSnapshot.settingsSavedRevision)
+        assertEquals("USB audio must not be stopped by Wi-Fi-only edits", 0, audioStoppedCount)
+    }
+
+    @Test
+    fun compactDiagnosticsLogLinesBoundsSizeAndPreservesCriticalEntries() {
+        val rows = mutableListOf<String>()
+        rows += JSONObject().put("timestamp", 1000L).put("module", "audio").put("stage", "macStart").put("message", "session=s1 started").toString()
+        rows += JSONObject().put("timestamp", 1001L).put("module", "audio").put("stage", "failed").put("message", "HANDSHAKE_REJECTED").toString()
+        for (i in 0 until 60) {
+            rows += JSONObject().put("timestamp", 2000L + i).put("module", "audio").put("stage", "healthSummary").put("message", "periodic frame telemetry $i padding-text").toString()
+        }
+        val compacted = Runtime.compactDiagnosticsLogLines(rows, maxBytes = 2000, targetBytes = 1500)
+        val totalBytes = compacted.joinToString("\n", postfix = "\n").toByteArray(Charsets.UTF_8).size
+        assertTrue("Compacted log must stay within budget, got $totalBytes", totalBytes <= 2000)
+        assertTrue("Critical start/failed entries must be preserved across compaction", compacted.any { it.contains("macStart") || it.contains("HANDSHAKE_REJECTED") })
+        assertTrue("Newest tail entry must be retained", compacted.last().contains("telemetry 59"))
     }
 }
 

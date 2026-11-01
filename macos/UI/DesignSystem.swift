@@ -36,7 +36,7 @@ public enum SidebarSection: String, CaseIterable, Identifiable, Sendable {
     public var subtitle: String {
         switch self {
         case .microphone: "作为 Mac 的低延迟音频输入"
-        case .network: "USB NCM 双向网络共享 · 手机与 Mac 互供"
+        case .network: "USB NCM 手机供网 · ADB 隧道 Mac 反向供网"
         case .devices: "管理连接的 Android 设备与端到端授权"
         case .logs: "系统控制台实时输出与排障记录"
         }
@@ -756,5 +756,210 @@ public struct StudioLevelMeter: View {
 
     public var body: some View {
         ZenWaveformWell(samples: [], level: level, barCount: 24, showDbPill: false)
+    }
+}
+
+public struct LiveWaveformWell: View {
+    public let telemetry: AudioTelemetry?
+    public let fallbackSamples: [Double]
+    public let fallbackLevel: Double
+    public let barCount: Int
+    public let showDbPill: Bool
+
+    public init(
+        telemetry: AudioTelemetry?,
+        fallbackSamples: [Double],
+        fallbackLevel: Double,
+        barCount: Int = 48,
+        showDbPill: Bool = true
+    ) {
+        self.telemetry = telemetry
+        self.fallbackSamples = fallbackSamples
+        self.fallbackLevel = fallbackLevel
+        self.barCount = barCount
+        self.showDbPill = showDbPill
+    }
+
+    public var body: some View {
+        if let telemetry {
+            ObservedWaveformWell(
+                telemetry: telemetry,
+                fallbackSamples: fallbackSamples,
+                fallbackLevel: fallbackLevel,
+                barCount: barCount,
+                showDbPill: showDbPill
+            )
+        } else {
+            ZenWaveformWell(
+                samples: fallbackSamples,
+                level: fallbackLevel,
+                barCount: barCount,
+                showDbPill: showDbPill
+            )
+        }
+    }
+}
+
+public struct TelemetryVisibilityObserver: NSViewRepresentable {
+    public let telemetry: AudioTelemetry
+    public let consumerID: UUID
+
+    public init(telemetry: AudioTelemetry, consumerID: UUID) {
+        self.telemetry = telemetry
+        self.consumerID = consumerID
+    }
+
+    public func makeNSView(context: Context) -> TelemetryVisibilityProbeView {
+        let view = TelemetryVisibilityProbeView()
+        view.configure(telemetry: telemetry, consumerID: consumerID)
+        return view
+    }
+
+    public func updateNSView(_ nsView: TelemetryVisibilityProbeView, context: Context) {
+        nsView.configure(telemetry: telemetry, consumerID: consumerID)
+    }
+
+    public static func dismantleNSView(_ nsView: TelemetryVisibilityProbeView, coordinator: ()) {
+        nsView.deactivate()
+    }
+}
+
+@MainActor public final class TelemetryVisibilityProbeView: NSView {
+    private weak var telemetry: AudioTelemetry?
+    private var consumerID = UUID()
+    private var windowObservers: [NSObjectProtocol] = []
+    private var appHideObserver: NSObjectProtocol?
+    private var appUnhideObserver: NSObjectProtocol?
+
+    func configure(telemetry: AudioTelemetry, consumerID: UUID) {
+        if self.consumerID != consumerID, let oldTelemetry = self.telemetry {
+            oldTelemetry.unregisterConsumer(self.consumerID)
+        }
+        self.telemetry = telemetry
+        self.consumerID = consumerID
+        updateVisibility()
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeWindowObservers()
+        if let window {
+            let names: [Notification.Name] = [
+                NSWindow.didChangeOcclusionStateNotification,
+                NSWindow.didMiniaturizeNotification,
+                NSWindow.didDeminiaturizeNotification
+            ]
+            for name in names {
+                let observer = NotificationCenter.default.addObserver(
+                    forName: name,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.updateVisibility()
+                    }
+                }
+                windowObservers.append(observer)
+            }
+        }
+        if appHideObserver == nil {
+            appHideObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didHideNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.updateVisibility()
+                }
+            }
+        }
+        if appUnhideObserver == nil {
+            appUnhideObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didUnhideNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.updateVisibility()
+                }
+            }
+        }
+        updateVisibility()
+    }
+
+    public override func viewDidHide() {
+        super.viewDidHide()
+        updateVisibility()
+    }
+
+    public override func viewDidUnhide() {
+        super.viewDidUnhide()
+        updateVisibility()
+    }
+
+    public func updateVisibility() {
+        guard let telemetry else { return }
+        guard let window else {
+            telemetry.reportConsumerVisibility(
+                consumerID,
+                state: TelemetryVisibilityState(hasWindow: false)
+            )
+            return
+        }
+        let state = TelemetryVisibilityState(
+            hasWindow: true,
+            isViewHidden: isHiddenOrHasHiddenAncestor,
+            isWindowVisible: window.isVisible && !window.isMiniaturized,
+            isWindowUnoccluded: window.occlusionState.contains(.visible),
+            isAppHidden: NSApplication.shared.isHidden
+        )
+        telemetry.reportConsumerVisibility(consumerID, state: state)
+    }
+
+    public func deactivate() {
+        removeWindowObservers()
+        if let appHideObserver {
+            NotificationCenter.default.removeObserver(appHideObserver)
+            self.appHideObserver = nil
+        }
+        if let appUnhideObserver {
+            NotificationCenter.default.removeObserver(appUnhideObserver)
+            self.appUnhideObserver = nil
+        }
+        telemetry?.unregisterConsumer(consumerID)
+    }
+
+    private func removeWindowObservers() {
+        for observer in windowObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        windowObservers.removeAll()
+    }
+}
+
+private struct ObservedWaveformWell: View {
+    @ObservedObject var telemetry: AudioTelemetry
+    @State private var consumerID = UUID()
+    let fallbackSamples: [Double]
+    let fallbackLevel: Double
+    let barCount: Int
+    let showDbPill: Bool
+
+    var body: some View {
+        let samples = telemetry.waveform.isEmpty ? fallbackSamples : telemetry.waveform
+        let level = telemetry.receivedFrames > 0 ? telemetry.level : fallbackLevel
+        ZenWaveformWell(
+            samples: samples,
+            level: level,
+            barCount: barCount,
+            showDbPill: showDbPill
+        )
+        .background(TelemetryVisibilityObserver(telemetry: telemetry, consumerID: consumerID))
+        .onAppear {
+            telemetry.registerConsumer(consumerID)
+        }
+        .onDisappear {
+            telemetry.unregisterConsumer(consumerID)
+        }
     }
 }

@@ -34,6 +34,8 @@ public final class AudioReceiver: @unchecked Sendable {
  private var firstFrameTimeoutWorkItem: DispatchWorkItem?
  private var settings: Settings?
  private var sessionID: String?
+ private var expectedToken: String?
+ private var lastBindAddress: String?
  private var negotiatedAudio: AudioParameters?
  private var onHandshake: (@Sendable (AudioParameters) -> Void)?
  private var onBatch: AudioFrameBatchHandler?
@@ -60,12 +62,27 @@ public final class AudioReceiver: @unchecked Sendable {
   }
  }
 
+ public static func effectiveBindAddress(for settings: Settings) -> String {
+  let trimmed = settings.listenAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+  switch settings.transport {
+  case .usb:
+   return "127.0.0.1"
+  case .wifi:
+   return (trimmed.isEmpty || trimmed == "127.0.0.1") ? "0.0.0.0" : trimmed
+  }
+ }
+
+ public var boundAddress: String? {
+  onReceiverQueue { lastBindAddress }
+ }
+
  /// Start receiving authenticated audio. `onBatch` must call its acknowledgement
  /// after that batch has been consumed or deliberately discarded. The receiver will
  /// not read again until the acknowledgement arrives.
  public func start(
   settings: Settings,
   session: String,
+  expectedToken: String? = nil,
   onHandshake: (@Sendable (AudioParameters) -> Void)? = nil,
   onBatch: @escaping AudioFrameBatchHandler,
   onError: @escaping @Sendable (String) -> Void
@@ -85,9 +102,7 @@ public final class AudioReceiver: @unchecked Sendable {
    guard let port = NWEndpoint.Port(rawValue: UInt16(settings.audioPort)) else {
     throw LinkError.failure("BAD_PORT", "音频监听端口无效")
    }
-   let bindAddress = (settings.transport == .wifi && settings.listenAddress == "127.0.0.1")
-    ? "0.0.0.0"
-    : settings.listenAddress
+   let bindAddress = Self.effectiveBindAddress(for: settings)
    parameters.requiredLocalEndpoint = .hostPort(
     host: NWEndpoint.Host(bindAddress),
     port: port
@@ -99,6 +114,8 @@ public final class AudioReceiver: @unchecked Sendable {
    active = true
    self.settings = settings
    sessionID = session
+   self.expectedToken = expectedToken
+   lastBindAddress = bindAddress
    negotiatedAudio = settings.audio
    self.onHandshake = onHandshake
    self.onBatch = onBatch
@@ -152,6 +169,8 @@ public final class AudioReceiver: @unchecked Sendable {
 
   settings = nil
   sessionID = nil
+  expectedToken = nil
+  lastBindAddress = nil
   negotiatedAudio = nil
   onHandshake = nil
   onBatch = nil
@@ -231,9 +250,10 @@ public final class AudioReceiver: @unchecked Sendable {
        throw LinkError.failure("HANDSHAKE_REJECTED", "身份或音频能力不一致")
       }
       let handshakeToken = handshake["token"] as? String ?? ""
+      let requiredToken = self.expectedToken ?? settings.pairingCode
       let tokenMatches = settings.transport == .wifi
-       ? (settings.pairingCode.isEmpty || handshakeToken == settings.pairingCode)
-       : (handshakeToken == settings.pairingCode)
+       ? (requiredToken.isEmpty || handshakeToken == requiredToken)
+       : (handshakeToken == requiredToken)
       guard tokenMatches,
             let rate = handshake["sampleRate"] as? Int,
             let channels = handshake["channels"] as? Int,
@@ -511,6 +531,8 @@ public final class AudioReceiver: @unchecked Sendable {
   let errorHandler = onError
   settings = nil
   sessionID = nil
+  expectedToken = nil
+  lastBindAddress = nil
   negotiatedAudio = nil
   onHandshake = nil
   onBatch = nil

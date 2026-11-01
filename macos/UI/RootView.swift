@@ -3,26 +3,113 @@ import AppKit
 import Contracts
 import Support
 
+public struct SettingsSheetSessionState: Equatable, Sendable {
+    public var draft: Contracts.Settings
+    public var isDirty: Bool = false
+    public var isPresented: Bool = false
+    public var awaitingSaveCompletion: Bool = false
+
+    public init(
+        draft: Contracts.Settings,
+        isDirty: Bool = false,
+        isPresented: Bool = false,
+        awaitingSaveCompletion: Bool = false
+    ) {
+        self.draft = draft
+        self.isDirty = isDirty
+        self.isPresented = isPresented
+        self.awaitingSaveCompletion = awaitingSaveCompletion
+    }
+
+    public mutating func open(baseline: Contracts.Settings) {
+        if isPresented || isDirty {
+            isPresented = true
+            return
+        }
+        draft = baseline
+        isDirty = false
+        isPresented = true
+    }
+
+    public mutating func updateDraft(_ newDraft: Contracts.Settings, baseline: Contracts.Settings) {
+        draft = newDraft
+        isDirty = (newDraft != baseline)
+    }
+
+    public mutating func beginSave() {
+        awaitingSaveCompletion = true
+    }
+
+    public mutating func cancel(baseline: Contracts.Settings, isSaving: Bool) {
+        guard !isSaving else { return }
+        draft = baseline
+        isDirty = false
+        awaitingSaveCompletion = false
+        isPresented = false
+    }
+
+    public mutating func handleDismiss(baseline: Contracts.Settings, isSaving: Bool, settingsError: String?) {
+        guard !isSaving else { return }
+        if settingsError == nil && !isDirty {
+            draft = baseline
+            isDirty = false
+            awaitingSaveCompletion = false
+        }
+        isPresented = false
+    }
+
+    public mutating func handleSavedRevisionChanged(newSettings: Contracts.Settings) {
+        if awaitingSaveCompletion {
+            draft = newSettings
+            isDirty = false
+            awaitingSaveCompletion = false
+            isPresented = false
+        } else if !isDirty {
+            draft = newSettings
+        }
+    }
+
+    public mutating func handleSavingStateChanged(isSaving: Bool, settingsError: String?) {
+        if !isSaving && settingsError != nil {
+            awaitingSaveCompletion = false
+        }
+    }
+
+    public mutating func handleExternalSettingsChanged(
+        newSettings: Contracts.Settings,
+        isSaving: Bool,
+        settingsError: String?
+    ) {
+        if !isDirty && !awaitingSaveCompletion && !isSaving && settingsError == nil {
+            draft = newSettings
+        }
+    }
+}
+
 public struct RootView: View {
     @Environment(\.colorScheme) private var colorScheme
     private let snapshot: AppSnapshot
+    private let telemetry: AudioTelemetry?
     private let send: (UserAction) -> Void
 
+    private let initialShowAdvancedOptions: Bool
+
     @State private var selectedSection: SidebarSection = .microphone
-    @State private var settingsDraft: Contracts.Settings
-    @State private var settingsDirty = false
     @State private var activeSheet: RootSheet?
     @State private var wizardStep = 0
 
     public init(
         snapshot: AppSnapshot,
+        telemetry: AudioTelemetry? = nil,
         initialSection: SidebarSection = .microphone,
+        initialShowAdvancedOptions: Bool = false,
         send: @escaping (UserAction) -> Void
     ) {
         self.snapshot = snapshot
+        self.telemetry = telemetry
+        self.initialShowAdvancedOptions = initialShowAdvancedOptions
         self.send = send
         _selectedSection = State(initialValue: initialSection)
-        _settingsDraft = State(initialValue: snapshot.settings)
         _activeSheet = State(initialValue: !snapshot.wizardSkipped && !snapshot.soundTestCompleted ? .wizard : nil)
     }
 
@@ -53,38 +140,16 @@ public struct RootView: View {
         }
         .background(palette.windowBackground)
         .frame(minWidth: 700, minHeight: 500)
-        .sheet(item: $activeSheet, onDismiss: resetSettingsDraft) { sheet in
+        .sheet(item: $activeSheet) { sheet in
             switch sheet {
-            case .settings:
-                SettingsSheet(
-                    settings: $settingsDraft,
-                    isDirty: $settingsDirty,
-                    outputs: snapshot.outputs,
-                    onCancel: {
-                        resetSettingsDraft()
-                        activeSheet = nil
-                    },
-                    onSave: {
-                        send(.saveSettings(settingsDraft))
-                        settingsDirty = false
-                        activeSheet = nil
-                    }
-                )
             case .wizard:
                 SetupWizard(
                     snapshot: snapshot,
+                    telemetry: telemetry,
                     step: $wizardStep,
                     send: send
                 )
                 .interactiveDismissDisabled()
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("USBLinkMic.showSettings"))) { _ in
-            openSettings()
-        }
-        .onChange(of: snapshot.settings) { _, settings in
-            if !settingsDirty {
-                settingsDraft = settings
             }
         }
         .onChange(of: snapshot.wizardSkipped) { _, skipped in
@@ -227,25 +292,6 @@ public struct RootView: View {
                 }
                 .buttonStyle(.plain)
                 .help("刷新设备与连接状态 (⌘R)")
-
-                Button {
-                    openSettings()
-                } label: {
-                    Text("⌘,")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(palette.textSecondary)
-                        .frame(width: 48, height: 32)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(palette.cardBackground)
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(palette.border, lineWidth: 1)
-                        }
-                }
-                .buttonStyle(.plain)
-                .help("偏好设置 (⌘,)")
             }
         }
         .padding(.horizontal, 40)
@@ -257,14 +303,16 @@ public struct RootView: View {
         case .microphone:
             MicrophoneWorkspaceView(
                 snapshot: snapshot,
-                send: send,
-                onOpenSettings: openSettings
+                telemetry: telemetry,
+                initialShowAdvancedConnection: initialShowAdvancedOptions,
+                initialShowAudioOptions: initialShowAdvancedOptions,
+                send: send
             )
         case .network:
             NetworkWorkspaceView(
                 snapshot: snapshot,
-                send: send,
-                onOpenSettings: openSettings
+                initialShowAdvanced: initialShowAdvancedOptions,
+                send: send
             )
         case .devices:
             DevicesWorkspaceView(
@@ -289,21 +337,9 @@ public struct RootView: View {
         }
         return "等待手机连接"
     }
-
-    private func openSettings() {
-        settingsDraft = snapshot.settings
-        settingsDirty = false
-        activeSheet = .settings
-    }
-
-    private func resetSettingsDraft() {
-        settingsDraft = snapshot.settings
-        settingsDirty = false
-    }
 }
 
 private enum RootSheet: String, Identifiable, Equatable {
-    case settings
     case wizard
 
     var id: String { rawValue }

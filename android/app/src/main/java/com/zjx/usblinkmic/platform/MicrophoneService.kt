@@ -472,6 +472,7 @@ class MicrophoneService : Service() {
                 audio.channelCount == p.channels && audio.audioFormat == encoding
             ) { "AUDIO_HARDWARE_UNAVAILABLE_OR_FORMAT_CHANGED" }
 
+            val connectStartMs = android.os.SystemClock.elapsedRealtime()
             val connection = Socket()
             val writeWatchdog = SocketWriteWatchdog(connection)
             if (!capture.attachSocket(connection, writeWatchdog)) {
@@ -499,6 +500,14 @@ class MicrophoneService : Service() {
             }
             val reply = connection.getInputStream().bufferedReader().readLine()
             check(reply != null && JSONObject(reply).optBoolean("accepted")) { "HANDSHAKE_REJECTED" }
+            val handshakeElapsedMs = (android.os.SystemClock.elapsedRealtime() - connectStartMs).coerceAtLeast(0L)
+            Runtime.log(
+                r.mode,
+                "handshakeAccepted",
+                "音频握手成功 mode=${r.mode} rate=${p.sampleRate} ch=${p.channels} fmt=${p.format} src=${p.source}",
+                session = r.session,
+                elapsedMs = handshakeElapsedMs
+            )
             if (!isCurrent(capture)) return
 
             audio.startRecording()
@@ -506,6 +515,12 @@ class MicrophoneService : Service() {
             capture.startedAtElapsedMs = android.os.SystemClock.elapsedRealtime()
             if (!markRecording(capture)) return
             registerSilencingCallback(capture, audio)
+            Runtime.log(
+                r.mode,
+                "recordingStarted",
+                "AudioRecord 采音已启动 mode=${r.mode} rate=${p.sampleRate} ch=${p.channels}",
+                session = r.session
+            )
             Runtime.updateAudio(r) {
                 it.copy(
                     microphone = ModuleStatus(TaskPhase.RUNNING, "正在采音", "系统静音状态通过 Android 录音状态回报"),
@@ -529,6 +544,7 @@ class MicrophoneService : Service() {
             val updateStride = maxOf(1, count / trend.size)
             var trendCount = 0
             var lastUiUpdateMs = android.os.SystemClock.elapsedRealtime()
+            var lastHealthLogMs = lastUiUpdateMs
             var previousReadEndNs = 0L
             while (isCurrent(capture) && capture.recording) {
                 val readStartNs = android.os.SystemClock.elapsedRealtimeNanos()
@@ -591,13 +607,27 @@ class MicrophoneService : Service() {
                     val packetDurationNs = (n / p.channels).toLong() * 1_000_000_000L / p.sampleRate
                     capture.recordSocketWrite(writeDurationNs, packetDurationNs)
                 }
-                capture.framesSent.incrementAndGet()
-                capture.pcmBytesSent.addAndGet((wireBytes - 4).toLong())
+                val totalFrames = capture.framesSent.incrementAndGet()
+                val totalBytes = capture.pcmBytesSent.addAndGet((wireBytes - 4).toLong())
+                if (totalFrames == 1L) {
+                    val firstFrameMs = (nowMs - connectStartMs).coerceAtLeast(0L)
+                    Runtime.log(r.mode, "firstFrameSent", "首帧音频已发送 bytes=${wireBytes - 4}", session = r.session, elapsedMs = firstFrameMs)
+                }
+                if (nowMs - lastHealthLogMs >= 45_000L) {
+                    lastHealthLogMs = nowMs
+                    val upMs = (nowMs - capture.startedAtElapsedMs).coerceAtLeast(0L)
+                    Runtime.log(
+                        r.mode,
+                        "healthSummary",
+                        "framesSent=$totalFrames pcmBytes=$totalBytes readMaxUs=${capture.readDurationMaxUs.get()} writeMaxUs=${capture.socketWriteMaxUs.get()} writeSlow=${capture.socketWriteSlowCount.get()} silenced=${capture.silenced}",
+                        session = r.session,
+                        elapsedMs = upMs
+                    )
+                }
                 if (updateUi) {
                     val level = sqrt(energy / n)
                     val waveform = ArrayList<Double>(trendCount)
                     for (i in 0 until trendCount) waveform.add(trend[i])
-                    val totalFrames = capture.framesSent.get()
                     Runtime.updateAudioMeter(r) {
                         it.copy(level = level, waveform = waveform, frames = totalFrames)
                     }
@@ -607,9 +637,18 @@ class MicrophoneService : Service() {
         } catch (e: Exception) {
             if (isCurrent(capture) && !r.cancelled) {
                 capture.captureFailures.incrementAndGet()
-                Runtime.fail(r, e.message ?: e.javaClass.simpleName)
+                Runtime.fail(r, e.message ?: e.javaClass.simpleName, source = "capture")
             }
         } finally {
+            val endMs = android.os.SystemClock.elapsedRealtime()
+            val runMs = if (capture.startedAtElapsedMs > 0L) (endMs - capture.startedAtElapsedMs).coerceAtLeast(0L) else 0L
+            Runtime.log(
+                r.mode,
+                "sessionEnd",
+                "采音会话结束 framesSent=${capture.framesSent.get()} pcmBytes=${capture.pcmBytesSent.get()} cancelled=${r.cancelled} error=${r.error.ifBlank { "none" }}",
+                session = r.session,
+                elapsedMs = runMs
+            )
             capture.closeResources()
             try { ownedAudio?.release() } catch (_: Exception) { }
             val stopThisStart = releaseCapture(capture)

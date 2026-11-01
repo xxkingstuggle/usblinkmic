@@ -2,365 +2,24 @@ import SwiftUI
 import Contracts
 import Support
 
-struct SettingsSheet: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Binding var settings: Contracts.Settings
-    @Binding var isDirty: Bool
-    let outputs: [OutputDevice]
-    let onCancel: () -> Void
-    let onSave: () -> Void
-
-    private var palette: ZenPalette { ZenPalette(colorScheme) }
-
-    private var errors: [String] {
-        SettingsValidator.errors(settings) + SettingsValidator.outputErrors(settings, outputs: outputs)
-    }
-
-    private var sampleRateLabel: String {
-        switch settings.audio.sampleRate {
-        case 16000: "16.0 kHz (语音级)"
-        case 44100: "44.1 kHz (CD 级)"
-        case 48000: "48.0 kHz (录音室)"
-        case 96000: "96.0 kHz (母带级)"
-        default: "\(settings.audio.sampleRate) Hz"
-        }
-    }
-
-    private var channelsLabel: String {
-        settings.audio.channels == 1 ? "单声道 (1 Channel)" : "立体声 (2 Channels)"
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            headerBar
-
-            Rectangle()
-                .fill(palette.divider)
-                .frame(height: 1)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    audioSamplingGroup
-                    networkParamsGroup
-                    sessionSafetyGroup
-
-                    if !errors.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(errors.enumerated()), id: \.offset) { _, error in
-                                Text("• \(error)")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(palette.stopCrimson)
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                    }
-                }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 22)
-            }
-
-            footerBar
-        }
-        .frame(width: 520, height: settings.transport == .wifi ? 700 : 640)
-        .background(palette.cardBackground)
-        .onChange(of: settings) { _, _ in isDirty = true }
-    }
-
-    // MARK: - Header
-
-    private var headerBar: some View {
-        HStack {
-            Text("偏好设置")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(palette.textPrimary)
-
-            Spacer()
-
-            Text("⌘,")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(palette.textTertiary)
-        }
-        .padding(.horizontal, 28)
-        .frame(height: 58)
-    }
-
-    // MARK: - Group 1: 音频采样与缓冲区
-
-    private var audioSamplingGroup: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("音频采样与编码")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(palette.textSecondary)
-
-            VStack(spacing: 0) {
-                settingRow(title: "音频采样率", showDivider: true) {
-                    Menu {
-                        ForEach(Capabilities.sampleRates, id: \.self) { rate in
-                            Button(rate == 44100 ? "44.1 kHz (CD 级)" : "\(rate) Hz") {
-                                settings.audio.sampleRate = rate
-                            }
-                        }
-                    } label: {
-                        dropdownPillLabel(sampleRateLabel)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                settingRow(title: "声道配置", showDivider: true) {
-                    Menu {
-                        Button("单声道 (1 Channel)") { settings.audio.channels = 1 }
-                        Button("立体声 (2 Channels)") { settings.audio.channels = 2 }
-                    } label: {
-                        dropdownPillLabel(channelsLabel)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                settingRow(title: "PCM 采样精度", showDivider: true) {
-                    Menu {
-                        ForEach(PCMFormat.allCases, id: \.self) { format in
-                            Button("PCM \(format.rawValue.uppercased())") {
-                                settings.audio.format = format
-                            }
-                        }
-                    } label: {
-                        dropdownPillLabel("PCM \(settings.audio.format.rawValue.uppercased())")
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                settingRow(title: "手机硬件音源", showDivider: false) {
-                    Menu {
-                        ForEach(RecordingSource.allCases, id: \.self) { source in
-                            Button(source.label) {
-                                settings.audio.source = source
-                            }
-                        }
-                    } label: {
-                        dropdownPillLabel(settings.audio.source.label)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(palette.windowBackground)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            }
-        }
-    }
-
-    // MARK: - Group 2: 网络共享高级参数
-
-    private var networkParamsGroup: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("网络共享高级参数")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(palette.textSecondary)
-
-            VStack(spacing: 0) {
-                settingRow(title: "物理共享协议", showDivider: true) {
-                    Menu {
-                        Button("USB NCM 原生以太网") { settings.transport = .usb }
-                        Button("Wi-Fi 局域网音频传输") { settings.transport = .wifi }
-                    } label: {
-                        Text(settings.transport == .usb ? "USB NCM 原生以太网" : "Wi-Fi 无线局域网")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(palette.emeraldGreen)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                settingRow(title: "下发 DNS 服务器", showDivider: true) {
-                    TextField("223.5.5.5", text: $settings.dns)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .medium).monospacedDigit())
-                        .foregroundStyle(palette.textPrimary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 12)
-                        .frame(width: 144, height: 30)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(palette.cardBackground)
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .strokeBorder(palette.border, lineWidth: 1)
-                        }
-                }
-
-                settingRow(title: "转发路由网段", showDivider: settings.transport == .wifi) {
-                    TextField("0.0.0.0/0", text: $settings.routes)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12).monospacedDigit())
-                        .foregroundStyle(palette.textSecondary)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 180)
-                }
-
-                if settings.transport == .wifi {
-                    settingRow(title: "手机 Wi-Fi 地址", showDivider: true) {
-                        TextField("如 192.168.1.10", text: $settings.wifiHost)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(palette.textPrimary)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 160)
-                    }
-
-                    settingRow(title: "会话配对码", showDivider: false) {
-                        TextField("留空则免配对码", text: $settings.pairingCode)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(palette.textPrimary)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 180)
-                    }
-                }
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(palette.windowBackground)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            }
-        }
-    }
-
-    // MARK: - Group 3: 会话安全边界
-
-    private var sessionSafetyGroup: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("会话安全边界")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(palette.textSecondary)
-
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("退出时恢复设备原生模式")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(palette.textPrimary)
-                    Text("自动关闭 NCM 与 ADB TCP 转发，不留残余")
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.textTertiary)
-                }
-
-                Spacer()
-
-                Text("始终启用")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.emeraldGreen)
-            }
-            .padding(.horizontal, 20)
-            .frame(height: 68)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(palette.windowBackground)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            }
-        }
-    }
-
-    // MARK: - Footer
-
-    private var footerBar: some View {
-        HStack(spacing: 12) {
-            Spacer()
-
-            Button(action: onCancel) {
-                Text("取消")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(palette.textSecondary)
-                    .frame(width: 78, height: 36)
-                    .background(palette.segmentedTrack, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-
-            Button(action: onSave) {
-                Text("保存应用")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 96, height: 36)
-                    .background(
-                        palette.isDark
-                            ? Color(red: 0x2E / 255.0, green: 0xA0 / 255.0, blue: 0x43 / 255.0)
-                            : Color(red: 0x00 / 255.0, green: 0x71 / 255.0, blue: 0xE3 / 255.0),
-                        in: Capsule()
-                    )
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.defaultAction)
-            .disabled(!errors.isEmpty)
-        }
-        .padding(.horizontal, 28)
-        .padding(.bottom, 22)
-    }
-
-    private func settingRow<Trailing: View>(
-        title: String,
-        showDivider: Bool,
-        @ViewBuilder trailing: () -> Trailing
-    ) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-
-                Spacer()
-
-                trailing()
-            }
-            .padding(.horizontal, 20)
-            .frame(height: 46)
-
-            if showDivider {
-                Rectangle()
-                    .fill(palette.divider)
-                    .frame(height: 1)
-                    .padding(.horizontal, 20)
-            }
-        }
-    }
-
-    private func dropdownPillLabel(_ text: String) -> some View {
-        HStack(spacing: 6) {
-            Text(text)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(palette.textPrimary)
-            Image(systemName: "arrowtriangle.down.fill")
-                .font(.system(size: 7))
-                .foregroundStyle(palette.textSecondary)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 30)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(palette.cardBackground)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(palette.border, lineWidth: 1)
-        }
-    }
-}
-
-// MARK: - Onboarding Setup Wizard
-
-struct SetupWizard: View {
+public struct SetupWizard: View {
     @Environment(\.colorScheme) private var colorScheme
     let snapshot: AppSnapshot
+    var telemetry: AudioTelemetry? = nil
     @Binding var step: Int
     let send: (UserAction) -> Void
+
+    public init(
+        snapshot: AppSnapshot,
+        telemetry: AudioTelemetry? = nil,
+        step: Binding<Int>,
+        send: @escaping (UserAction) -> Void
+    ) {
+        self.snapshot = snapshot
+        self.telemetry = telemetry
+        self._step = step
+        self.send = send
+    }
 
     private var palette: ZenPalette { ZenPalette(colorScheme) }
 
@@ -370,7 +29,7 @@ struct SetupWizard: View {
         ("验证真实声音输入", "确认收到真实音频帧并能听见声音")
     ]
 
-    var body: some View {
+    public var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
@@ -527,7 +186,13 @@ struct SetupWizard: View {
                 .font(.system(size: 13))
                 .foregroundStyle(palette.textSecondary)
 
-            ZenWaveformWell(samples: snapshot.waveform, level: snapshot.level, barCount: 36, showDbPill: true)
+            LiveWaveformWell(
+                telemetry: telemetry,
+                fallbackSamples: snapshot.waveform,
+                fallbackLevel: snapshot.level,
+                barCount: 36,
+                showDbPill: true
+            )
 
             HStack(spacing: 10) {
                 Button("开始声音测试") {

@@ -86,40 +86,112 @@ final class RenderTests: XCTestCase {
         }
     }
 
-    /// Captures the settings sheet and onboarding wizard, which are sheets rather
-    /// than workspaces and would otherwise never be visually verified.
+    /// Renders in-page settings and onboarding wizard for visual verification.
+    /// Outputs the 3 required artifacts: mic-usb-default, mic-wifi-expanded, network-options.
     @MainActor func testSettingsSheetAndWizardRender() throws {
         _ = NSApplication.shared
         let root = renderDirectory()
+        let artifactsRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("artifacts")
 
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            let suffix = appearance == .aqua ? "light" : "dark"
+        var usbSnapshot = AppSnapshot()
+        usbSnapshot.wizardSkipped = true
+        usbSnapshot.soundTestCompleted = true
+        usbSnapshot.devices = [Device(id: "8A2X1094F", name: "Pixel 9 Pro", state: .online)]
+        usbSnapshot.selectedDeviceID = "8A2X1094F"
+        usbSnapshot.settings.transport = .usb
 
-            let sheet = NSHostingView(
-                rootView: SettingsSheet(
-                    settings: .constant(Contracts.Settings()),
-                    isDirty: .constant(false),
-                    outputs: [OutputDevice(id: "blackhole-2ch", name: "BlackHole 2ch", isVirtual: true)],
-                    onCancel: {},
-                    onSave: {}
-                )
-            )
-            sheet.appearance = NSAppearance(named: appearance)
-            sheet.frame = NSRect(x: 0, y: 0, width: 520, height: 580)
-            sheet.layoutSubtreeIfNeeded()
-            try write(sheet, to: root.appendingPathComponent("sheet-settings-\(suffix).png"))
+        let usbView = NSHostingView(
+            rootView: RootView(snapshot: usbSnapshot, initialSection: .microphone, send: { _ in })
+        )
+        usbView.appearance = NSAppearance(named: .darkAqua)
+        usbView.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+        usbView.layoutSubtreeIfNeeded()
+        try write(usbView, to: root.appendingPathComponent("mic-usb-default.png"))
+        let usbArtifact = artifactsRoot.appendingPathComponent("mic-usb-default.png")
+        try? FileManager.default.removeItem(at: usbArtifact)
+        try? FileManager.default.copyItem(at: root.appendingPathComponent("mic-usb-default.png"), to: usbArtifact)
 
-            var wizardSnapshot = AppSnapshot()
-            wizardSnapshot.devices = [Device(id: "8A2X1094F", name: "Pixel 9 Pro", state: .online)]
-            wizardSnapshot.selectedDeviceID = "8A2X1094F"
-            let wizard = NSHostingView(
-                rootView: SetupWizard(snapshot: wizardSnapshot, step: .constant(0), send: { _ in })
-            )
-            wizard.appearance = NSAppearance(named: appearance)
-            wizard.frame = NSRect(x: 0, y: 0, width: 520, height: 420)
-            wizard.layoutSubtreeIfNeeded()
-            try write(wizard, to: root.appendingPathComponent("sheet-wizard-\(suffix).png"))
-        }
+        var wifiSnapshot = usbSnapshot
+        wifiSnapshot.settings.transport = .wifi
+        wifiSnapshot.settings.wifiHost = "192.168.1.108"
+        wifiSnapshot.lanCandidates = ["192.168.1.108"]
+        let wifiView = NSHostingView(
+            rootView: RootView(snapshot: wifiSnapshot, initialSection: .microphone, initialShowAdvancedOptions: true, send: { _ in })
+        )
+        wifiView.appearance = NSAppearance(named: .darkAqua)
+        wifiView.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+        wifiView.layoutSubtreeIfNeeded()
+        try write(wifiView, to: root.appendingPathComponent("mic-wifi-expanded.png"))
+        let wifiArtifact = artifactsRoot.appendingPathComponent("mic-wifi-expanded.png")
+        try? FileManager.default.removeItem(at: wifiArtifact)
+        try? FileManager.default.copyItem(at: root.appendingPathComponent("mic-wifi-expanded.png"), to: wifiArtifact)
+
+        let netSnapshot = usbSnapshot
+        let netView = NSHostingView(
+            rootView: RootView(snapshot: netSnapshot, initialSection: .network, initialShowAdvancedOptions: true, send: { _ in })
+        )
+        netView.appearance = NSAppearance(named: .darkAqua)
+        netView.frame = NSRect(x: 0, y: 0, width: 1120, height: 720)
+        netView.layoutSubtreeIfNeeded()
+        try write(netView, to: root.appendingPathComponent("network-options.png"))
+        let netArtifact = artifactsRoot.appendingPathComponent("network-options.png")
+        try? FileManager.default.removeItem(at: netArtifact)
+        try? FileManager.default.copyItem(at: root.appendingPathComponent("network-options.png"), to: netArtifact)
+
+        let wizard = NSHostingView(
+            rootView: SetupWizard(snapshot: usbSnapshot, step: .constant(0), send: { _ in })
+        )
+        wizard.appearance = NSAppearance(named: .darkAqua)
+        wizard.frame = NSRect(x: 0, y: 0, width: 520, height: 420)
+        wizard.layoutSubtreeIfNeeded()
+        try write(wizard, to: root.appendingPathComponent("sheet-wizard-dark.png"))
+    }
+
+    func testSettingsSheetSessionStateIdempotentOpenAndScopedSaveCompletion() {
+        let baseline = Contracts.Settings()
+        var sessionA = SettingsSheetSessionState(draft: baseline)
+        var sessionB = SettingsSheetSessionState(draft: baseline)
+
+        // Open both sessions
+        sessionA.open(baseline: baseline)
+        sessionB.open(baseline: baseline)
+        XCTAssertTrue(sessionA.isPresented)
+        XCTAssertTrue(sessionB.isPresented)
+
+        // Make dirty edits in both sessions
+        var draftA = baseline
+        draftA.dns = "8.8.8.8"
+        sessionA.updateDraft(draftA, baseline: baseline)
+        XCTAssertTrue(sessionA.isDirty)
+
+        var draftB = baseline
+        draftB.wifiHost = "192.168.1.99"
+        sessionB.updateDraft(draftB, baseline: baseline)
+        XCTAssertTrue(sessionB.isDirty)
+
+        // Repeated open (e.g. Cmd+, notification) must be idempotent and preserve dirty draft
+        sessionB.open(baseline: baseline)
+        XCTAssertTrue(sessionB.isPresented)
+        XCTAssertTrue(sessionB.isDirty)
+        XCTAssertEqual(sessionB.draft.wifiHost, "192.168.1.99")
+
+        // Session A initiates save; Session B does not
+        sessionA.beginSave()
+        XCTAssertTrue(sessionA.awaitingSaveCompletion)
+        XCTAssertFalse(sessionB.awaitingSaveCompletion)
+
+        // When save completes, only Session A closes and resets; Session B preserves its dirty draft and stays open
+        sessionA.handleSavedRevisionChanged(newSettings: draftA)
+        sessionB.handleSavedRevisionChanged(newSettings: draftA)
+
+        XCTAssertFalse(sessionA.isPresented)
+        XCTAssertFalse(sessionA.isDirty)
+        XCTAssertEqual(sessionA.draft.dns, "8.8.8.8")
+
+        XCTAssertTrue(sessionB.isPresented, "Other dirty settings draft must not be closed by global save revision")
+        XCTAssertTrue(sessionB.isDirty, "Other dirty settings draft must remain dirty")
+        XCTAssertEqual(sessionB.draft.wifiHost, "192.168.1.99")
     }
 
     // MARK: - Helpers

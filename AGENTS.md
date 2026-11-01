@@ -1,7 +1,7 @@
 # 项目指引
 
 ## 项目定位
-让 Android 手机通过 USB 或 Wi-Fi 为 Mac 提供麦克风与网络共享能力。
+让 Android 手机通过 USB 或 Wi-Fi 为 Mac 提供麦克风能力，并通过 USB 提供双向网络共享能力。
 
 ## 如何运行
 安装与用户操作见 README.md 和 docs/；Mac、Android 构建入口分别按 Package.swift、android/gradlew 和 scripts/ 中的说明使用。
