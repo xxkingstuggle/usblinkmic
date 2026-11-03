@@ -691,7 +691,7 @@ class MicrophoneService : Service() {
             }
             stopCapture(currentRequest)
             Runtime.onMicrophoneServiceStopped(currentRequest.session, currentRequest.error)
-            if (Runtime.audioRequest === currentRequest || Runtime.audioRequest == null) {
+            if (Runtime.audioRequest === currentRequest) {
                 Runtime.audioRequest = null
                 val snapshot = Runtime.state.value
                 if (!currentRequest.cancelled && currentRequest.accepted && currentRequest.error.isNotBlank()) {

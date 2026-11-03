@@ -283,7 +283,11 @@ private final class AudioDelivery: @unchecked Sendable {
     if module == .microphone {
      pauseWifiAutoConnect()
      revokeMicrophoneIntent("userStop")
-     if owned[module] == nil {
+     if snapshot.settings.transport == .wifi,
+        owned[module] == nil,
+        jobs[module] == nil,
+        autoGrant == nil,
+        !stopping.contains(module) {
       status(.microphone, .stopped, "已停止拾音", "已暂停等待手机连接")
       refreshWifiSnapshot()
       return
@@ -1372,7 +1376,18 @@ private final class AudioDelivery: @unchecked Sendable {
   guard !shutdownDeadlineExpired else{return}
   if let job=stopJobs[module] {await job.value;return}
   jobs[module]?.cancel();jobs[module]=nil;jobIDs[module]=nil
-  guard let session=owned[module] else{return}
+  if module == .microphone, let grant = autoGrant {
+   let grantSession = grant.sessionID
+   autoGrant = nil
+   wifiService?.sessionEndedByHost(sessionID: grantSession, reason: source == .phone ? "phoneRequested" : "macStopped")
+  }
+  guard let session=owned[module] else{
+   if module == .microphone {
+    status(.microphone, .stopped, "已停止拾音", "")
+    refreshWifiSnapshot()
+   }
+   return
+  }
   stopping.insert(module)
   // A separate, uncancelled cleanup task is shared by Stop, Save and Quit.
   // Keep ownership in the durable journal throughout every suspension point.
@@ -1741,7 +1756,7 @@ extension SessionController: WifiSessionHost {
  }
 
  public func wifiEnd(sessionID:String,reason:String) async {
-  guard autoGrant?.sessionID == sessionID else{return}
+  guard autoGrant?.sessionID == sessionID || owned[.microphone]?.id == sessionID else{return}
   log("wifi","sessionEnd","session=\(sessionID), reason=\(reason)")
   revokeMicrophoneIntent("wifi-\(reason)")
   if owned[.microphone]?.id == sessionID {await stop(.microphone,source:.phone)}

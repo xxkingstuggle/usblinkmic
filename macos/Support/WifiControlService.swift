@@ -432,13 +432,17 @@ public protocol WifiPeerConnection: AnyObject {
 
  private func stop(_ m: [String: Any], _ conn: Conn, seq: Int) async {
   let session = m["session"] as? String ?? ""
-  guard let current = active, current.id == session, current.phoneID == conn.phoneID else {
-   return push(conn, command: "error", ack: seq, fields: ["code": "STALE_SESSION"], macFields: "STALE_SESSION")
+  guard !session.isEmpty else {
+   return push(conn, command: "error", ack: seq, fields: ["code": "BAD_REQUEST"], macFields: "BAD_REQUEST")
   }
-  active = nil
-  pausedByUser = true
-  await host?.wifiEnd(sessionID: session, reason: "phone-\(m["reason"] as? String ?? "stop")")
-  host?.wifiServiceChanged()
+  if let current = active, current.id == session, current.phoneID == conn.phoneID {
+   active = nil
+   pausedByUser = true
+   await host?.wifiEnd(sessionID: session, reason: "phone-\(m["reason"] as? String ?? "stop")")
+   host?.wifiServiceChanged()
+  } else {
+   await host?.wifiEnd(sessionID: session, reason: "phone-\(m["reason"] as? String ?? "stop")")
+  }
   push(conn, command: "stopped", ack: seq, fields: ["session": session], macFields: session)
  }
 

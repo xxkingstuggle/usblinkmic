@@ -384,6 +384,11 @@ object Runtime {
     current.error = error
    }
    audioRequest = null
+   update {
+    if (it.microphone.phase != TaskPhase.FAILED) {
+     it.copy(microphone = ModuleStatus(), level = 0.0, waveform = emptyList(), controlledByMac = false)
+    } else it
+   }
   }
   wifiAutoConnector?.onMicrophoneServiceStopped(session, error)
  }

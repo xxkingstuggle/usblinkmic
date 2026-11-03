@@ -210,7 +210,9 @@ class WifiAutoConnector(
         @Volatile var lastSentStatusSeq: Int = -1,
         @Volatile var lastValidResponseTimeMs: Long = 0L,
         @Volatile var isStreaming: Boolean = false,
-        @Volatile var closed: Boolean = false
+        @Volatile var closed: Boolean = false,
+        @Volatile var pendingPrepareSeq: Int = -1,
+        @Volatile var audioEpoch: Long = 0L
     )
 
     private val sessionGeneration = AtomicLong(0)
@@ -297,14 +299,16 @@ class WifiAutoConnector(
         postOnMain { refreshSnapshot() }
     }
 
-    fun stopAudioService(reason: String = "stop") {
-        val req = Runtime.audioRequest
-        if (req != null) {
-            req.cancelled = true
-            if (context != null) {
-                Runtime.stop(context, req, source = reason)
-            } else {
-                MicrophoneService.stopCapture(req)
+    fun stopAudioService(expectedSessionID: String? = null, reason: String = "stop") {
+        val req = Runtime.audioRequest ?: return
+        if (req.mode != "wifi") return
+        if (expectedSessionID != null && expectedSessionID.isNotBlank() && req.session != expectedSessionID) return
+        req.cancelled = true
+        if (context != null) {
+            Runtime.stop(context, req, source = reason)
+        } else {
+            MicrophoneService.stopCapture(req)
+            if (Runtime.audioRequest === req) {
                 Runtime.audioRequest = null
                 Runtime.update {
                     it.copy(
@@ -324,6 +328,10 @@ class WifiAutoConnector(
         var active: ActiveSession? = null
         synchronized(sessionLock) {
             active = currentSession
+            if (active != null && !active!!.closed) {
+                active!!.audioEpoch++
+                active!!.pendingPrepareSeq = -1
+            }
         }
         if (active != null && !active!!.closed) {
             thread(name = "linkmic-start", isDaemon = true) {
@@ -339,34 +347,45 @@ class WifiAutoConnector(
     fun onUserStoppedExplicitly() {
         pausedByUser = true
         var sessionToStop: ActiveSession? = null
+        var sessionIDToStop = ""
         synchronized(sessionLock) {
             sessionToStop = currentSession
+            if (sessionToStop != null) {
+                sessionToStop!!.audioEpoch++
+                sessionToStop!!.pendingPrepareSeq = -1
+                sessionIDToStop = sessionToStop!!.sessionID
+                sessionToStop!!.sessionID = ""
+                sessionToStop!!.isStreaming = false
+            }
         }
         if (sessionToStop != null && !sessionToStop!!.closed) {
             thread(name = "linkmic-stop", isDaemon = true) {
-                sendAuthenticatedStop(sessionToStop!!, reason = "userStopped")
+                sendAuthenticatedStop(sessionToStop!!, reason = "userStopped", sessionIDOverride = sessionIDToStop)
             }
         }
-        stopAudioService("userStopped")
-        sessionToStop?.isStreaming = false
+        stopAudioService(expectedSessionID = sessionIDToStop, reason = "userStopped")
         postOnMain { refreshSnapshot() }
     }
 
     fun onMicrophoneServiceStopped(session: String?, error: String = "") {
+        if (session.isNullOrBlank()) return
         var active: ActiveSession? = null
         synchronized(sessionLock) {
-            active = currentSession
-        }
-        if (active != null && !active!!.closed) {
-            active!!.isStreaming = false
-            if (active!!.sessionID == session || session == null) {
-                active!!.sessionID = ""
+            val curr = currentSession
+            if (curr != null && !curr.closed && curr.sessionID == session) {
+                active = curr
+                curr.audioEpoch++
+                curr.pendingPrepareSeq = -1
+                curr.isStreaming = false
+                curr.sessionID = ""
             }
+        }
+        if (active != null) {
             thread(name = "linkmic-srv-stop", isDaemon = true) {
-                sendAuthenticatedStop(active!!, reason = if (error.isNotBlank()) "audioError" else "phoneStop")
+                sendAuthenticatedStop(active!!, reason = if (error.isNotBlank()) "audioError" else "phoneStop", sessionIDOverride = session)
             }
+            postOnMain { refreshSnapshot() }
         }
-        postOnMain { refreshSnapshot() }
     }
 
     fun forgetMac(macId: String) {
@@ -415,7 +434,6 @@ class WifiAutoConnector(
 
     fun checkAutoConnect(userInitiated: Boolean = false) {
         if (!running.get()) return
-        if (pausedByUser && !userInitiated) return
         synchronized(sessionLock) {
             if (currentSession != null && !currentSession!!.closed) return
         }
@@ -583,7 +601,7 @@ class WifiAutoConnector(
                 closeCurrentSessionExplicitly("connectFailed: ${e.message}")
                 postOnMain {
                     refreshSnapshot()
-                    if (!pausedByUser && running.get()) {
+                    if (running.get()) {
                         scheduleReconnect()
                     }
                 }
@@ -593,6 +611,7 @@ class WifiAutoConnector(
 
     fun sendAuthenticatedPrepare(session: ActiveSession, userInitiated: Boolean) {
         if (session.closed) return
+        if (pausedByUser && !userInitiated) return
         try {
             val audio = Runtime.state.value.settings.audio
             val formatStr = if (audio.format == PCMFormat.I16) "i16" else "f32"
@@ -603,7 +622,9 @@ class WifiAutoConnector(
             }
             val userInitiatedInt = if (userInitiated) 1 else 0
             synchronized(session.writer) {
+                session.audioEpoch++
                 val seq = session.nextClientSeq++
+                session.pendingPrepareSeq = seq
                 val fields = "${audio.sampleRate}|${audio.channels}|$formatStr|$sourceStr|$userInitiatedInt"
                 val mac = WifiCrypto.messageMAC(session.key, direction = "c", clientNonce = session.clientNonce, serverNonce = session.serverNonce, sequence = seq, command = "prepare", fields = fields)
                 val prepReq = JSONObject()
@@ -718,10 +739,13 @@ class WifiAutoConnector(
                             session.isStreaming = true
                             postOnMain { refreshSnapshot() }
                         } else if (state == "ended") {
-                            if (session.isStreaming) {
+                            if (session.isStreaming || session.sessionID.isNotBlank()) {
+                                session.audioEpoch++
+                                session.pendingPrepareSeq = -1
+                                val targetToStop = session.sessionID
                                 session.isStreaming = false
                                 session.sessionID = ""
-                                stopAudioService("stateEnded")
+                                stopAudioService(expectedSessionID = targetToStop, reason = "stateEnded")
                                 postOnMain { refreshSnapshot() }
                             }
                         }
@@ -739,12 +763,50 @@ class WifiAutoConnector(
                             Runtime.log("wifi", "invalidMac", "cmd=prepared")
                             break
                         }
+                        if (ack != session.pendingPrepareSeq || session.pendingPrepareSeq == -1) {
+                            Runtime.log("wifi", "badAck", "cmd=prepared ack=$ack expected=${session.pendingPrepareSeq}")
+                            break
+                        }
+                        session.pendingPrepareSeq = -1
+                        session.lastValidResponseTimeMs = monotonicClock()
+                        session.expectedServerSeq++
+
                         if (audioPort !in 1..65535 || sessionID.isBlank()) {
                             Runtime.log("wifi", "malformedPrepared", "port=$audioPort session=$sessionID")
                             break
                         }
-                        session.lastValidResponseTimeMs = monotonicClock()
-                        session.expectedServerSeq++
+
+                        // Check if user stopped while prepare was in flight
+                        if (pausedByUser) {
+                            Runtime.log("wifi", "preparedIgnoredPaused", "session=$sessionID user paused")
+                            thread(name = "linkmic-cancel-grant", isDaemon = true) {
+                                sendAuthenticatedStop(session, reason = "cancelledPaused", sessionIDOverride = sessionID)
+                            }
+                            session.sessionID = ""
+                            session.isStreaming = false
+                            postOnMain { refreshSnapshot() }
+                            continue
+                        }
+
+                        // Validate audio parameters against requested
+                        val currentAudio = Runtime.state.value.settings.audio
+                        val reqFormatStr = if (currentAudio.format == PCMFormat.I16) "i16" else "f32"
+                        val reqSourceStr = when (currentAudio.source) {
+                            RecordingSource.MICROPHONE -> "microphone"
+                            RecordingSource.UNPROCESSED -> "unprocessed"
+                            RecordingSource.VOICE_RECOGNITION -> "voiceRecognition"
+                        }
+                        if (prepRate != currentAudio.sampleRate || prepChannels != currentAudio.channels || prepFormat != reqFormatStr || prepSource != reqSourceStr) {
+                            Runtime.log("wifi", "preparedParamMismatch", "got $prepRate/$prepChannels/$prepFormat/$prepSource expected ${currentAudio.sampleRate}/${currentAudio.channels}/$reqFormatStr/$reqSourceStr")
+                            thread(name = "linkmic-cancel-param", isDaemon = true) {
+                                sendAuthenticatedStop(session, reason = "unsupportedParams", sessionIDOverride = sessionID)
+                            }
+                            session.sessionID = ""
+                            session.isStreaming = false
+                            postOnMain { refreshSnapshot() }
+                            continue
+                        }
+
                         session.sessionID = sessionID
                         session.isStreaming = false
                         val audioToken = WifiCrypto.audioToken(session.key, sessionID, session.clientNonce, session.serverNonce)
@@ -758,8 +820,9 @@ class WifiAutoConnector(
                                 else -> RecordingSource.MICROPHONE
                             }
                         )
+                        val capturedEpoch = session.audioEpoch
                         postOnMain {
-                            if (currentSession === session && !session.closed) {
+                            if (currentSession === session && !session.closed && !pausedByUser && session.audioEpoch == capturedEpoch) {
                                 Runtime.update {
                                     it.copy(
                                         wifiAuto = it.wifiAuto.copy(
@@ -770,6 +833,10 @@ class WifiAutoConnector(
                                     )
                                 }
                                 onSessionReady?.invoke(sessionID, audioToken, session.target.host, audioPort, audioParams)
+                            } else {
+                                thread(name = "linkmic-cancel-stale-ready", isDaemon = true) {
+                                    sendAuthenticatedStop(session, reason = "cancelledStale", sessionIDOverride = sessionID)
+                                }
                             }
                         }
                     }
@@ -786,6 +853,8 @@ class WifiAutoConnector(
                         session.lastValidResponseTimeMs = monotonicClock()
                         session.expectedServerSeq++
                         pausedByUser = false
+                        session.audioEpoch++
+                        session.pendingPrepareSeq = -1
                         Runtime.log("wifi", "serverEventStart", "Mac 端发起了开始拾音")
                         thread(name = "linkmic-prepare-start", isDaemon = true) {
                             sendAuthenticatedPrepare(session, userInitiated = true)
@@ -813,10 +882,13 @@ class WifiAutoConnector(
                         if (reason == "macUser" || reason == "macStopped") {
                             pausedByUser = true
                         }
-                        Runtime.log("wifi", "serverEventStop", "reason=$reason")
+                        session.audioEpoch++
+                        session.pendingPrepareSeq = -1
+                        val stoppedSession = session.sessionID
                         session.isStreaming = false
                         session.sessionID = ""
-                        stopAudioService("serverEventStop: $reason")
+                        Runtime.log("wifi", "serverEventStop", "reason=$reason")
+                        stopAudioService(expectedSessionID = stoppedSession, reason = "serverEventStop: $reason")
                         postOnMain { refreshSnapshot() }
                     }
                     "stopped" -> {
@@ -826,15 +898,14 @@ class WifiAutoConnector(
                             Runtime.log("wifi", "invalidMac", "cmd=stopped")
                             break
                         }
-                        if (stoppedSession != session.sessionID && session.sessionID.isNotBlank()) {
-                            Runtime.log("wifi", "wrongSession", "cmd=stopped")
-                            break
-                        }
                         session.lastValidResponseTimeMs = monotonicClock()
                         session.expectedServerSeq++
+                        session.audioEpoch++
+                        session.pendingPrepareSeq = -1
+                        val targetToStop = if (session.sessionID.isNotBlank()) session.sessionID else stoppedSession
                         session.isStreaming = false
                         session.sessionID = ""
-                        stopAudioService("stoppedAck")
+                        stopAudioService(expectedSessionID = targetToStop, reason = "stoppedAck")
                         postOnMain { refreshSnapshot() }
                     }
                     "error" -> {
@@ -845,12 +916,18 @@ class WifiAutoConnector(
                             break
                         }
                         session.expectedServerSeq++
+                        session.lastValidResponseTimeMs = monotonicClock()
                         if (code == "PAUSED_BY_USER") {
                             pausedByUser = true
+                            session.audioEpoch++
+                            session.pendingPrepareSeq = -1
+                            val targetToStop = session.sessionID
                             session.isStreaming = false
                             session.sessionID = ""
-                            stopAudioService("pausedByUser")
+                            stopAudioService(expectedSessionID = targetToStop, reason = "pausedByUser")
                             postOnMain { refreshSnapshot() }
+                        } else if (code == "STALE_SESSION") {
+                            Runtime.log("wifi", "staleSessionIgnored", code)
                         } else {
                             Runtime.log("wifi", "serverError", code)
                             break
@@ -870,13 +947,15 @@ class WifiAutoConnector(
         }
     }
 
-    private fun sendAuthenticatedStop(session: ActiveSession, reason: String) {
+    private fun sendAuthenticatedStop(session: ActiveSession, reason: String, sessionIDOverride: String? = null) {
+        val targetSession = if (!sessionIDOverride.isNullOrBlank()) sessionIDOverride else session.sessionID
+        if (targetSession.isBlank()) return
         try {
             synchronized(session.writer) {
                 val seq = session.nextClientSeq++
-                val fields = "${session.sessionID}|$reason"
+                val fields = "$targetSession|$reason"
                 val mac = WifiCrypto.messageMAC(session.key, direction = "c", clientNonce = session.clientNonce, serverNonce = session.serverNonce, sequence = seq, command = "stop", fields = fields)
-                val req = JSONObject().put("cmd", "stop").put("seq", seq).put("session", session.sessionID).put("reason", reason).put("mac", mac)
+                val req = JSONObject().put("cmd", "stop").put("seq", seq).put("session", targetSession).put("reason", reason).put("mac", mac)
                 session.writer.write(req.toString() + "\n")
                 session.writer.flush()
             }
@@ -888,6 +967,7 @@ class WifiAutoConnector(
         try { session.socket.close() } catch (_: Throwable) {}
 
         var wasOwner = false
+        val capturedSessionID = session.sessionID
         synchronized(sessionLock) {
             if (currentSession === session) {
                 currentSession = null
@@ -896,10 +976,10 @@ class WifiAutoConnector(
         }
 
         if (wasOwner) {
-            stopAudioService("sessionClosed: $reason")
+            stopAudioService(expectedSessionID = capturedSessionID, reason = "sessionClosed: $reason")
             postOnMain {
                 refreshSnapshot()
-                if (allowReconnect && !pausedByUser && running.get()) {
+                if (allowReconnect && running.get()) {
                     scheduleReconnect()
                 }
             }
@@ -909,14 +989,16 @@ class WifiAutoConnector(
 
     private fun closeCurrentSessionExplicitly(reason: String) {
         var toClose: ActiveSession? = null
+        var toCloseID = ""
         synchronized(sessionLock) {
             toClose = currentSession
+            toCloseID = toClose?.sessionID ?: ""
             currentSession = null
         }
         if (toClose != null) {
             toClose!!.closed = true
             try { toClose!!.socket.close() } catch (_: Throwable) {}
-            stopAudioService("sessionExplicitlyClosed: $reason")
+            stopAudioService(expectedSessionID = toCloseID, reason = "sessionExplicitlyClosed: $reason")
         }
         postOnMain { refreshSnapshot() }
     }

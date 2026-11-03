@@ -473,8 +473,10 @@ private fun MicrophonePage(
                 Text(
                     text = if (settingsDirty) {
                         "设置草稿尚未保存；保存后才能使用新目标。"
+                    } else if (snapshot.settings.wifiAutoConnect) {
+                        "未绑定 Mac：请在下方局域网列表中选择 Mac，核对 6 位验证码完成绑定"
                     } else {
-                        "请先在「设置与诊断」中填写 Mac 的 Wi-Fi 地址。"
+                        "未配置目标：请开启「局域网自动连接」或在设置中填写 Mac Wi-Fi 地址"
                     },
                     fontSize = 12.sp,
                     color = if (settingsDirty) palette.red else palette.textSecondary,

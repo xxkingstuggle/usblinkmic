@@ -156,7 +156,7 @@ class MainActivity : ComponentActivity() {
    val existingAudio = Runtime.audioRequest
    if (existingAudio != null) {
     if (existingAudio.session == request.session) return
-    if (existingAudio.cancelled) {
+    if (existingAudio.cancelled && existingAudio.mode == request.mode) {
      Runtime.stop(this, existingAudio, source = "replaceStale")
     } else {
      Runtime.fail(request, "AUDIO_BUSY: 请先停止现有音频会话")
