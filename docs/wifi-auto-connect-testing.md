@@ -1,46 +1,44 @@
 # USBLinkMic 纯 Wi-Fi 自动连接：真机测试与验收指南
 
-本文档提供版本 **4.0.17**（Wi-Fi Revision 1，审查返工第三轮）纯 Wi-Fi 自动连接功能的真机测试与验收说明。
+本文档提供版本 **4.0.17**（Wi-Fi Revision 1，界面修复候选 Review-4）纯 Wi-Fi 自动连接功能的真机测试与验收说明。
 
 > [!IMPORTANT]
 > **开发安全与隔离承诺**：
-> 候选尚未安装或启动。主代理已核对现用 Mac 应用的主程序、Info.plist 和内置 APK 指纹未变，现用进程仍在运行。以下步骤由用户在准备测试时自行操作；普通 Wi-Fi、手机热点、后台持续采音和 BlackHole 实际输入仍待真机验收。
+> 初始候选阶段完成离线复核后，用户另行授权安装两端。当前 Review-4 已覆盖升级手机，并替换、重新打开 Mac App；设置与信任记录保留。主代理已在这台手机上核验发现卡片的排版修复，普通 Wi-Fi、热点、后台持续采音和 BlackHole 的完整验收仍按下列用例记录。
 >
-> **注意单实例运行**：准备测试时，请先正常退出现用 USB LinkMic。直接从候选目录运行新版，不要将它拖入 `/Applications` 覆盖旧版，也不要同时运行两份 Mac App。两版默认共用 `~/Library/Application Support/USBLinkMic-v4/`，先备份该状态目录。
+> **注意单实例运行**：当前安装位置为 `/Applications/USB LinkMic.app`。若另外运行候选目录中的应用，请先退出已安装版。两版默认共用 `~/Library/Application Support/USBLinkMic-v4/`；备份位置见下文。
 
 ---
 
 ## 1. 候选安装包与校验和
 
-候选构建产物位于代码库目录：`artifacts/agy-wifi-auto-connect/review-3/4.0.17/`
+候选构建产物位于代码库目录：`artifacts/agy-wifi-auto-connect/review-4/4.0.17/`
 
 | 平台 / 文件 | 路径 | SHA-256 校验和 |
 |---|---|---|
-| **Android APK** | `artifacts/agy-wifi-auto-connect/review-3/4.0.17/USBLinkMic-4.0.17.apk` | `598f699dac74ff335b402d145e813265187aa59b63a1494e6311793c6237834c` |
-| **macOS App 归档** | `artifacts/agy-wifi-auto-connect/review-3/4.0.17/USBLinkMic-4.0.17-macOS.zip` | `92f62649affc38f4ae802362737140f96427639b0f5fd51d0c12ee3fd9d8a4d2` |
-| **macOS DMG 镜像** | `artifacts/agy-wifi-auto-connect/review-3/4.0.17/USBLinkMic-4.0.17.dmg` | `c29acb97994ff2310c18035bee02a1fe0a1dbcc632e6270dfcd6cd653a10df81` |
-| **安装包清单与摘要** | `artifacts/agy-wifi-auto-connect/review-3/4.0.17/manifest.json` | `5e98f0f1b2c38baeb05ee5875f851210b54abcbf616a5764a1016f85ea472e57` |
+| **Android APK** | `artifacts/agy-wifi-auto-connect/review-4/4.0.17/USBLinkMic-4.0.17.apk` | `36dc03e47321ea5c23d82691270d517610bb3acac54b24e3c855afce41489129` |
+| **macOS App 归档** | `artifacts/agy-wifi-auto-connect/review-4/4.0.17/USBLinkMic-4.0.17-macOS.zip` | `45d0a9a1c4ad331a1b25e2ce41f3faa22daa24a91739b47581fe349e58146816` |
+| **macOS DMG 镜像** | `artifacts/agy-wifi-auto-connect/review-4/4.0.17/USBLinkMic-4.0.17.dmg` | `206205c6a3344621db007359bd257fabe3cb19dccebfff9ee5cbe8417d05da9e` |
+| **安装包清单与摘要** | `artifacts/agy-wifi-auto-connect/review-4/4.0.17/manifest.json` | `b0149ebf018a733eaabd87b8fc088e0472817d1d7c12783deef7239787015dee` |
 
-- **校验方法**：在终端运行 `python3 scripts/verify-release.py artifacts/agy-wifi-auto-connect/review-3/4.0.17` 可验证资源、清单与散列一致性。签名需另外使用 `codesign --verify --deep --strict` 与 Android SDK 的 `apksigner verify`；本次两项静态检查均通过。
+- **校验方法**：在终端运行 `python3 scripts/verify-release.py artifacts/agy-wifi-auto-connect/review-4/4.0.17` 可验证资源、清单与散列一致性。签名需另外使用 `codesign --verify --deep --strict` 与 Android SDK 的 `apksigner verify`；本次两项静态检查均通过。
 
 ---
 
 ## 2. 测试前准备与备份
 
-### 2.1 备份现有运行环境
-先正常退出旧 Mac App，再将旧应用和整个 `~/Library/Application Support/USBLinkMic-v4/` 状态目录复制到自己选择的、尚不存在的备份目录。保留原目录，不清空、不删除。候选运行后产生的新信任记录不妨碍重新使用旧 Mac App。
+### 2.1 本次安装与备份
 
-如果后续需要回滚到旧版本：
-1. **Mac 端备份**：
-   - 现安装应用位于 `/Applications/USB LinkMic.app`。如需备份，执行：
-     ```bash
-     cp -R "/Applications/USB LinkMic.app" "$HOME/Desktop/USB LinkMic-backup.app"
-     ```
-2. **Android 端备份**：
-   - 当前手机上安装的原版 APK 在 Mac 备份位置：
-     `/Applications/USB LinkMic.app/Contents/Resources/companion.apk`
-     这只是旧安装包，不包含手机的设置或绑定数据；不要为了测试先卸载手机 App。
-     （SHA-256: `2643069518c0d84916890887cbdb9aee0dcc25ea58dc53e43f455fc089d9b4bb`）
+Review-4 的生产代码提交为 `4d5df9f`。版本仍为 4.0.17，请以以上 APK 摘要区分修复前后的安装包。
+
+本次替换前的 Mac App、Mac 状态目录和旧 4.0.17 APK 已保存到：
+`/Users/zjx/Developer/backups/USBLinkMic/20261104-040456-before-ui-fix/`。
+其中 `Android-4.0.17-before-ui-fix.apk` 是 Review-3，SHA-256 为 `598f699dac74ff335b402d145e813265187aa59b63a1494e6311793c6237834c`。它是安装包备份，不包含手机私有设置；本次采用保留数据的覆盖升级，没有卸载或清除数据。
+
+更早的 Mac 4.0.16 和手机 4.0.15 安装包备份保留在：
+`/Users/zjx/Developer/backups/USBLinkMic/20261104-034334-before-4.0.17/`。
+
+后续测试前若要重新备份，请正常退出 Mac App，将应用和整个 `~/Library/Application Support/USBLinkMic-v4/` 复制到自己选择的、尚不存在的目录，保留原目录。
 
 ### 2.2 测试环境网络配置要求
 支持以下两种可互通网络环境之一：
@@ -54,11 +52,11 @@
 ### 用例 1：首次配对与安全授权（6 位码比对）
 1. **安装并打开**：
    - 用户准备测试后，使用相同签名的 `USBLinkMic-4.0.17.apk` 覆盖升级手机 App 并打开；不要先卸载。若通过 USB 安装，安装完成后拔线再开始验收。
-   - 解压 macOS ZIP 或挂载 `USBLinkMic-4.0.17.dmg`，从独立目录启动候选 `USB LinkMic.app`。
+   - 当前两端已安装 Review-4；如需重装，可解压 macOS ZIP 或挂载 `USBLinkMic-4.0.17.dmg`，先退出正在运行的 Mac App，再启动候选。
    - **完全拔掉 USB 数据线**，确认 `adb devices` 没有任何连接。
 2. **观察自动发现与选择设备**：
    - 确认 Android 界面上的“局域网自动连接”处于开启状态。
-   - 在“发现的 Mac”列表中看到 Mac 广播的 `_usblinkmic._tcp` 服务条目后，点击目标 Mac 的“配对并信任”。
+   - 在“发现的 Mac”列表中看到 Mac 广播的 `_usblinkmic._tcp` 服务条目后，点击目标 Mac 的“配对绑定”。
 3. **安全确认交互**：
    - 手机端界面显示正在配对的 Mac 名称与 **6 位数字校验码**，提示“请在 Mac 上核对验证码并确认配对”。
    - Mac 端弹出“请求绑定 Wi-Fi 麦克风”横幅/弹窗，显示待配对手机名称与相同的 **6 位数字校验码**。
@@ -136,15 +134,16 @@
 如需彻底回滚到测试前状态：
 1. **Mac 端**：
    - 退出 4.0.17 版本的候选应用；
-   - 直接重新打开原 `/Applications/USB LinkMic.app`；测试过程没有覆盖它，通常无需恢复应用。
+   - 当前 `/Applications/USB LinkMic.app` 已按授权更新；若要回到 Review-3，将上文备份中的 `USB LinkMic-before-ui-fix.app` 复制回安装位置，再打开。
    - 保留状态和信任记录，不需要删除 `wifi-trust.json`。确需还原设置时，先备份候选运行后的状态，再由用户恢复之前保存的状态目录。
 2. **Android 端**：
    - **免卸载恢复（推荐，保留配置）**：直接在应用内设置页关闭“Wi-Fi 自动连接”开关后可与旧 Mac 版继续使用手动 Wi-Fi 或原 USB 工作流，无须卸载应用；
-   - **版本降级**：若需要降级回原版 `companion.apk`，由于 Android 系统的签名和版本保护机制，降级安装前通常需要先卸载当前应用（请注意：卸载将清除应用本地所有数据与权限授权），然后重新安装原版 `companion.apk`。
+   - **回到 Review-3**：使用上文备份的旧 4.0.17 APK 保留数据覆盖安装即可；同版本号无需为了回退界面先卸载。
+   - **降到更早版本**：回到 4.0.15 等较低版本受 Android 降级保护限制；通常需要卸载后安装，而卸载会清除本地数据与权限授权。不要把安装包备份当成数据备份。
 
 
 ## 7. 测试结果记录
 
 每种网络分别记录：两端版本、Mac/手机启动顺序、发现是否出现、配对是否成功、首次真实帧耗时、重连耗时、持续传输至少 5 分钟、锁屏结果、停止后 60 秒结果及 BlackHole 实际输入结果。失败时记录两端界面状态并导出脱敏日志；发现成功、TCP 接通或电平曾跳动不单独等于整项通过。
 
-本次主代理复核通过的是 39 项指定 Mac 隔离测试和 19 项 Android 自动连接测试，以及构建产物的静态检查；不代表完整测试套件或真实设备场景通过。
+Review-3 的逻辑复核通过了 39 项指定 Mac 隔离测试和 19 项 Android 自动连接测试。Review-4 仅修改 Android 界面，独立 release 构建、lintDebug、安装包完整性及签名检查通过，并已在同一台手机复现修复前的发现卡片异常、核对修复后的截图和布局。已绑定列表的同类约束已做源码复核；未据此宣称音频、重连或全部设备场景通过。

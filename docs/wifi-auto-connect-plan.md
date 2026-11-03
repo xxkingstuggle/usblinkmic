@@ -1,6 +1,6 @@
 # Wi-Fi 自动连接：实施状态与原始审查计划
 
-日期：2026-11-04。当前为 **4.0.17 Review-3 待真机测试候选**。功能代码提交为 `61049ba`，独立候选目录是 `artifacts/agy-wifi-auto-connect/review-3/4.0.17/`。普通 Wi-Fi、这台 Android 手机热点、锁屏后持续采音以及实际 BlackHole 输入均尚未设备验收。
+日期：2026-11-04。当前为 **4.0.17 Review-4 界面修复候选**。自动连接逻辑提交为 `61049ba`，Android 界面修复提交为 `4d5df9f`，当前候选目录是 `artifacts/agy-wifi-auto-connect/review-4/4.0.17/`。普通 Wi-Fi、这台 Android 手机热点、锁屏后持续采音以及实际 BlackHole 输入均尚未设备验收。
 
 ## 当前实现与验证范围
 
@@ -8,8 +8,10 @@
 - 两端用 P-256 ECDH 和 HMAC-SHA256 派生配对密钥、认证控制消息和会话音频令牌。没有实现 HKDF 或音频加密，不能作相应保证。
 - Mac 的信任文件位于 `~/Library/Application Support/USBLinkMic-v4/wifi-trust.json`，文件权限为 0600。Android 使用应用私有 SharedPreferences 保存手机身份和可信 Mac。
 - 已实现会话代际、按所有权清理连接、签名状态心跳、无合法响应时的超时、用户暂停，以及 Activity 与正在运行的前台采音服务的生命周期区分。
-- 主代理在最终源码上复核：39 项指定 Mac 隔离测试、19 项 Android `WifiAutoConnectTests` 通过；资源清单、内外 APK 一致性、Mac 签名、Android v2/v3 签名、秘密扫描及差异检查通过。这些结果不代表全套测试或设备验收。Mac release 构建、Android release 构建和 `lintDebug` 也通过。复核日志在 `artifacts/agy-wifi-auto-connect/review-3/parent-*.log`。
-- 候选未安装或启动；`/Applications/USB LinkMic.app` 的主程序、Info.plist、内置 APK 与任务开始时的指纹一致，现用进程在复核时仍为原 PID。
+- 主代理在 Review-3 逻辑源码上复核：39 项指定 Mac 隔离测试、19 项 Android `WifiAutoConnectTests` 通过；资源清单、内外 APK 一致性、Mac 签名、Android v2/v3 签名、秘密扫描及差异检查通过。这些结果不代表全套测试或设备验收。Mac release 构建、Android release 构建和 `lintDebug` 也通过。复核日志在 `artifacts/agy-wifi-auto-connect/review-3/parent-*.log`。
+- 初始候选阶段未安装或控制现用应用。用户后续明确授权安装两端，现已安装 Review-4，保留设置及绑定记录，并保存替换前的应用、Mac 状态及旧 APK 备份。
+- Review-4 修正发现卡片和已绑定列表中按钮抢占整行宽度的问题。主代理已在这台手机上核对发现卡片由逐字换行恢复为正常名称、地址及配对按钮，并通过 release 构建、lintDebug、资源与签名检查。完整音频/重连场景仍待用户验收。
+- 用户反馈的 Mac 红色地址提示对应未保存的中文地址草稿；撤销该草稿后提示消失，期间音频帧继续增长。没有削弱地址校验。
 - 先前日志测试的版本断言从硬编码 4.0.15 改为 `Capabilities.version`，这是过时版本预期的修正，不是日志保留算法修复；不计为本功能新增测试。
 
 实际协议见 [Wi-Fi 自动连接协议](../contracts/wifi-auto-connect-v1.md)，用户操作与回滚见 [候选测试指南](wifi-auto-connect-testing.md)。10 秒首次建连、网络恢复后 20 秒重连仍是待真机验证的目标。
