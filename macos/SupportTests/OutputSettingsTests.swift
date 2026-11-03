@@ -49,7 +49,7 @@ final class OutputSettingsTests: XCTestCase {
   XCTAssertTrue(loaded.contains(where:{$0.stage=="appBoot" || $0.stage=="start" || $0.stage=="failed"}),"Critical lifecycle/error entries must survive high-frequency log flood")
   XCTAssertTrue(loaded.contains(where:{$0.message.contains("frame count 79")}),"Newest tail entries must also be retained")
   let exported=try log.exportText()
-  XCTAssertTrue(exported.contains("# USBLinkMic Diagnostics v=4.0.15"))
+  XCTAssertTrue(exported.contains("# USBLinkMic Diagnostics v=\(Capabilities.version)"))
   XCTAssertTrue(exported.contains("frame count 79"))
  }
  func testSettingsValidatorScopedImpactAndWifiTargetHostRules() {

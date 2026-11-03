@@ -35,6 +35,7 @@ public enum SettingsValidator {
         if current.muted != updated.muted { keys.append("muted") }
         if current.dns != updated.dns { keys.append("dns") }
         if current.routes != updated.routes { keys.append("routes") }
+        if current.wifiAutoConnect != updated.wifiAutoConnect { keys.append("wifiAutoConnect") }
         return keys
     }
 

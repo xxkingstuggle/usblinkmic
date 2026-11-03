@@ -4,7 +4,7 @@ import Core
 import UI
 
 @main struct USBLinkMicApp: App {
-    @StateObject private var controller = SessionController()
+    @StateObject private var controller = SessionController(wifiAutoConnect: true)
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {

@@ -21,10 +21,14 @@ import com.zjx.usblinkmic.contracts.*
 import com.zjx.usblinkmic.platform.*
 import com.zjx.usblinkmic.support.SettingsStore
 import com.zjx.usblinkmic.support.SettingsValidator
+import com.zjx.usblinkmic.support.WifiTrustStore
 import com.zjx.usblinkmic.ui.LinkMicScreen
 
 class MainActivity : ComponentActivity() {
  private var pending: Request? = null
+ private lateinit var trustStore: WifiTrustStore
+ private lateinit var wifiAutoConnector: WifiAutoConnector
+
  private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
   val request = pending ?: return@registerForActivityResult
   Runtime.update { it.copy(microphonePermission = if(allowed) PermissionState.ALLOWED else if(shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) PermissionState.DENIED else PermissionState.SETTINGS_REQUIRED) }
@@ -41,6 +45,16 @@ class MainActivity : ComponentActivity() {
   super.onCreate(savedInstanceState)
   Runtime.attach(this)
   try { Runtime.update { it.copy(settings=SettingsStore(this).load()) } } catch(e: Exception) { Runtime.log("settings","loadFailed",e.message ?: "配置无法读取") }
+  trustStore = WifiTrustStore(this)
+  val connector = Runtime.getWifiAutoConnector(this)
+  connector.onSessionReady = { sessionID, token, host, port, audio ->
+   val currentSettings = Runtime.state.value.settings.copy(wifiHost = host, audioPort = port, audio = audio)
+   val request = Request(sessionID, token, "wifi", currentSettings, accepted = true)
+   Runtime.requests[sessionID] = request
+   pending = request
+   whenResumed(request) { authorize(request) }
+  }
+  wifiAutoConnector = connector
   pending=savedInstanceState?.getString("pendingSession")?.let { Runtime.requests[it] }
   setContent { LinkMicScreen(Runtime.state.value, ::action) }
   receive(intent)
@@ -48,9 +62,13 @@ class MainActivity : ComponentActivity() {
  override fun onStart() {
   super.onStart()
   Runtime.setAudioUiVisible(true)
+  if (Runtime.state.value.settings.wifiAutoConnect) {
+   wifiAutoConnector.onUiStart()
+  }
  }
  override fun onStop() {
   Runtime.setAudioUiVisible(false)
+  wifiAutoConnector.onUiStop()
   super.onStop()
  }
  override fun onNewIntent(intent: Intent) {super.onNewIntent(intent);setIntent(intent);receive(intent)}
@@ -143,8 +161,12 @@ class MainActivity : ComponentActivity() {
   when(action){
    UserAction.StartWifi -> {
     if(pending!=null){Runtime.log("wifi","systemPermissionBusy","请先完成当前系统权限处理",source="phoneUI",errorCode="SYSTEM_PERMISSION_BUSY");return}
-    Runtime.audioRequest?.let { Runtime.stop(this, it, source = "phoneUI") }
     val settings=Runtime.state.value.settings
+    if (settings.wifiAutoConnect && trustStore.loadTrustedMacs().isNotEmpty()) {
+     wifiAutoConnector.onUserStartedExplicitly()
+     return
+    }
+    Runtime.audioRequest?.let { Runtime.stop(this, it, source = "phoneUI") }
     val errors=SettingsValidator.wifiStartErrors(settings)
     if(errors.isNotEmpty()){
      val detail=errors.joinToString("；")
@@ -159,12 +181,31 @@ class MainActivity : ComponentActivity() {
     pending=request
     whenResumed(request){authorize(request)}
    }
-   UserAction.StopAudio -> (Runtime.audioRequest ?: pending?.takeIf { it.mode=="audio" || it.mode=="wifi" })?.let{Runtime.stop(this,it,source="phoneUI")}
+   UserAction.StopAudio -> {
+    wifiAutoConnector.onUserStoppedExplicitly()
+    (Runtime.audioRequest ?: pending?.takeIf { it.mode=="audio" || it.mode=="wifi" })?.let{Runtime.stop(this,it,source="phoneUI")}
+   }
    UserAction.StopVpn -> (Runtime.vpnRequest ?: pending?.takeIf { it.mode=="vpn" })?.let{Runtime.stop(this,it,source="phoneUI")}
-   UserAction.Refresh -> Runtime.log("status","refresh","状态来自当前服务，未自动启动任务",source="phoneUI")
+   UserAction.Refresh -> {
+    wifiAutoConnector.refreshSnapshot()
+    Runtime.log("status","refresh","状态来自当前服务，未自动启动任务",source="phoneUI")
+   }
    UserAction.ClearLogs -> Runtime.clearLogs()
    UserAction.ExportLogs -> exportLogs()
    UserAction.OpenSystemSettings -> startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName")))
+   is UserAction.PairWithMac -> wifiAutoConnector.startPairing(action.macId)
+   UserAction.CancelPairing -> wifiAutoConnector.cancelPairing()
+   is UserAction.ForgetMac -> wifiAutoConnector.forgetMac(action.macId)
+   is UserAction.SetWifiAutoConnect -> {
+    val next = Runtime.state.value.settings.copy(wifiAutoConnect = action.enabled)
+    try {
+     SettingsStore(this).save(next)
+     Runtime.update { it.copy(settings = next) }
+     if (action.enabled) wifiAutoConnector.onUiStart() else wifiAutoConnector.stop()
+    } catch (e: Exception) {
+     Runtime.log("wifi", "saveSettingFailed", e.message ?: "无法保存设置")
+    }
+   }
    is UserAction.SaveSettings -> {
     val previous = Runtime.state.value.settings
     val activeMode = Runtime.audioRequest?.mode ?: pending?.takeIf { it.mode == "audio" || it.mode == "wifi" }?.mode

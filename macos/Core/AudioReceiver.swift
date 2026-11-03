@@ -49,6 +49,7 @@ public final class AudioReceiver: @unchecked Sendable {
  private var maximumAcknowledgementWait: UInt64 = 0
  private var pendingBatchAt: UInt64 = 0
  private var maximumBatchPackets = 0
+ private var isListeningReady = false
 
  public init() {
   queue.setSpecific(key: queueKey, value: 1)
@@ -74,6 +75,10 @@ public final class AudioReceiver: @unchecked Sendable {
 
  public var boundAddress: String? {
   onReceiverQueue { lastBindAddress }
+ }
+
+ public var isReady: Bool {
+  onReceiverQueue { active && isListeningReady }
  }
 
  /// Start receiving authenticated audio. `onBatch` must call its acknowledgement
@@ -133,8 +138,21 @@ public final class AudioReceiver: @unchecked Sendable {
    listener = newListener
 
    newListener.stateUpdateHandler = { [weak self] state in
-    guard case .failed(let error) = state, let self else { return }
-    self.failListener(generation: runGeneration, error: error)
+    guard let self else { return }
+    self.onReceiverQueue {
+     guard self.isActive(runGeneration) else { return }
+     switch state {
+     case .ready:
+      self.isListeningReady = true
+     case .failed(let error):
+      self.isListeningReady = false
+      self.failListener(generation: runGeneration, error: error)
+     case .waiting, .cancelled, .setup:
+      self.isListeningReady = false
+     @unknown default:
+      break
+     }
+    }
    }
    newListener.newConnectionHandler = { [weak self] newConnection in
     guard let self else {
@@ -156,6 +174,7 @@ public final class AudioReceiver: @unchecked Sendable {
   cancelFirstFrameTimeout()
   generation &+= 1
   active = false
+  isListeningReady = false
 
   let oldListener = listener
   let oldConnection = connection
@@ -502,6 +521,7 @@ public final class AudioReceiver: @unchecked Sendable {
 
  private func failListener(generation runGeneration: UInt64, error: NWError) {
   guard isActive(runGeneration) else { return }
+  isListeningReady = false
   let message = "LISTEN_FAILED: \(error.localizedDescription)"
   let failedListener = listener
   listener = nil

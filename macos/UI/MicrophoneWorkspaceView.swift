@@ -111,6 +111,9 @@ struct MicrophoneWorkspaceView: View {
     }
 
     private var deviceDisplayName: String {
+        if let connected = snapshot.wifiAuto.connectedPhoneName, !connected.isEmpty {
+            return connected
+        }
         if let id = snapshot.selectedDeviceID,
            let device = snapshot.devices.first(where: { $0.id == id }) {
             return device.name
@@ -283,6 +286,10 @@ struct MicrophoneWorkspaceView: View {
                     subtitle: heroSubtitle
                 )
 
+                if let pair = snapshot.wifiAuto.pendingPair {
+                    wifiPairPromptBanner(pair)
+                }
+
                 heroMicrophoneCard
 
                 draftBarAndErrors
@@ -407,6 +414,64 @@ struct MicrophoneWorkspaceView: View {
             Text("通道：\(snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi")")
                 .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(palette.textSecondary)
+        }
+    }
+
+    private func wifiPairPromptBanner(_ pair: WifiPairPrompt) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "wifi.badge.plus")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(palette.accentBlue)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("请求绑定 Wi-Fi 麦克风")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text(pair.phoneName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                HStack(spacing: 6) {
+                    Text("确认两端显示的一致验证码：")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textSecondary)
+                    Text(pair.code)
+                        .font(.system(size: 16, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(palette.accentBlue)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 8) {
+                Button("拒绝") {
+                    send(.rejectWifiPair(pair.requestID))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).stroke(palette.divider, lineWidth: 1))
+                .foregroundStyle(palette.textSecondary)
+
+                Button("允许并绑定") {
+                    send(.approveWifiPair(pair.requestID))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(palette.accentBlue))
+                .foregroundStyle(.white)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(palette.accentBlue.opacity(0.08))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(palette.accentBlue.opacity(0.35), lineWidth: 1)
         }
     }
 

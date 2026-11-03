@@ -132,6 +132,17 @@ private final class AudioDelivery: @unchecked Sendable {
  private var isRefreshingDevices = false
  private var adbServerWarm = false
  private var networkHealthSummaryAt: TimeInterval = 0
+ private struct AutoWifiGrant {let sessionID:String;let phoneID:String;let phoneName:String;let token:String;let audio:AudioParameters}
+ /// Set only for a session started by an authenticated Wi-Fi control `prepare`; nil for USB/manual.
+ private var autoGrant:AutoWifiGrant?
+ private let wifiAutoConnectHost:Bool
+ private let wifiAdvertise:Bool
+ private var wifiTrust:WifiTrustStore?
+ private var wifiService:WifiControlService?
+ private var wifiListener:WifiControlListener?
+ private var wifiTicker:Task<Void,Never>?
+ private var wifiListenerState:WifiListenerState = .stopped
+ private var wifiTrustError:String?
 
  private var timer:Task<Void,Never>?
  private var deviceMonitor:Task<Void,Never>?
@@ -146,13 +157,18 @@ private final class AudioDelivery: @unchecked Sendable {
  private var quitting=false
  private var diagnosticsClosed=false
  private var onboardingURL:URL {journal.deletingLastPathComponent().appendingPathComponent("onboarding.json")}
- public init(resourceRoot:URL?=nil, stateDirectory:URL?=nil) {
+ public init(resourceRoot:URL?=nil, stateDirectory:URL?=nil, wifiAutoConnect:Bool=false, wifiAdvertise:Bool=true) {
+  wifiAutoConnectHost=wifiAutoConnect;self.wifiAdvertise=wifiAdvertise
   root=resourceRoot ?? Bundle.main.resourceURL ?? URL(fileURLWithPath:"/nonexistent")
   adb=ADB(executable:root.appendingPathComponent("platform-tools/adb"))
   let directory=stateDirectory ?? FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("USBLinkMic-v4")
   store=SettingsStore(url:directory.appendingPathComponent("settings.json"));journal=directory.appendingPathComponent("owned-sessions.json")
   diagnosticLog=DiagnosticLog(url:directory.appendingPathComponent("diagnostics.log"))
   do {snapshot.settings=try store.load()} catch {snapshot.recoveryMessage="配置加载失败：\(error.localizedDescription)"}
+  if wifiAutoConnect {
+   do {wifiTrust=try WifiTrustStore(url:directory.appendingPathComponent("wifi-trust.json"))}
+   catch {wifiTrustError="Wi-Fi 信任记录无法读取，已停用自动连接：\(error.localizedDescription)"}
+  }
   do {snapshot.logs=Array(try diagnosticLog.load().suffix(500))} catch {snapshot.recoveryMessage="历史日志读取失败：\(error.localizedDescription)"}
   let initialOutputs=AudioOutput.devices(forceRefresh:true)
   snapshot.outputs=initialOutputs
@@ -161,12 +177,13 @@ private final class AudioDelivery: @unchecked Sendable {
  }
  public func boot() {
   guard !booted,!quitting else{return};booted=true
-  log("system","appBoot","version=\(Capabilities.version), build=40015, protocol=\(Capabilities.protocolVersion), runtimeRev=\(Capabilities.runtimeRevision), boot=\(bootID)")
+  log("system","appBoot","version=\(Capabilities.version), build=40017, protocol=\(Capabilities.protocolVersion), runtimeRev=\(Capabilities.runtimeRevision), boot=\(bootID)")
   let observer=AudioDeviceObserver { [weak self] deviceSnapshot in
    self?.handleAudioDeviceSnapshot(deviceSnapshot)
   }
   audioDeviceObserver=observer
   observer.start()
+  startWifiAutoConnectIfNeeded()
   ProcessRunner.$currentGroup.withValue(processGroup) {
    recoveryJob=Task {await recover();recovering=false;recoveryJob=nil;if !quitting {await refresh()}}
    timer=Task {while !Task.isCancelled,!quitting {try? await Task.sleep(nanoseconds:1_000_000_000);if !Task.isCancelled,!quitting {await tick()}}}
@@ -216,7 +233,7 @@ private final class AudioDelivery: @unchecked Sendable {
     log("audio","defaultOutputChanged","from=\(previousDefault ?? "none"), to=\(deviceSnapshot.defaultOutputUID ?? "none"), selected=\(snapshot.settings.outputUID)")
     if let id=activeSessions[.microphone],valid(.microphone,id),snapshot.settings.outputUID == "default",audioRecovery == nil {
      do {
-      try output.restartCurrentDevice(snapshot.settings)
+      try output.restartCurrentDevice(microphoneSettings())
       lastRenderCallbacks=output.statistics.renderCallbacks
       renderProgressAt=ProcessInfo.processInfo.systemUptime
       log("audio","defaultOutputSwitched","session=\(id), defaultOutput=\(deviceSnapshot.defaultOutputUID ?? "default")")
@@ -247,6 +264,7 @@ private final class AudioDelivery: @unchecked Sendable {
     snapshot.selectedDeviceID=serial
    case .start(let module):
     log(module.rawValue,"userAction","source=\(source.rawValue), action=start, device=\(deviceAlias(snapshot.selectedDeviceID ?? "")), transport=\(snapshot.settings.transport.rawValue)")
+    if module == .microphone {wifiService?.pausedByUser=false}
     if module == .microphone,owned[module]==nil,jobs[module]==nil {revokeMicrophoneIntent("newStart");microphoneIntent=UUID();microphoneIntentSerial=snapshot.selectedDeviceID;audioRetryCount=0}
     if module == .microphone,usbNetworkTransition {
      deferredNetworkResume=microphoneIntent
@@ -256,10 +274,11 @@ private final class AudioDelivery: @unchecked Sendable {
     start(module)
    case .stop(let module):
     log(module.rawValue,"userAction","source=\(source.rawValue), action=stop, session=\(owned[module]?.id ?? "none")")
-    if module == .microphone {revokeMicrophoneIntent("userStop")}
+    if module == .microphone {pauseWifiAutoConnect();revokeMicrophoneIntent("userStop")}
     Task{await stop(module,source:source)}
    case .stopAll:
     log("system","userAction","source=\(source.rawValue), action=stopAll, owned=[\(owned.keys.map(\.rawValue).sorted().joined(separator:","))]")
+    pauseWifiAutoConnect()
     revokeMicrophoneIntent("userStopAll")
     Task{await stopAll(source:source)}
    case .saveSettings(let settings):
@@ -288,6 +307,19 @@ private final class AudioDelivery: @unchecked Sendable {
    case .openDriverHelp:
     log("audio","userAction","source=\(source.rawValue), action=openDriverHelp")
     NSWorkspace.shared.open(URL(string:"https://existential.audio/blackhole/")!)
+   case .approveWifiPair(let requestID):
+    let approved=wifiService?.approvePair(requestID:requestID) ?? false
+    log("wifi","userAction","source=\(source.rawValue), action=approvePair, approved=\(approved)");refreshWifiSnapshot()
+   case .rejectWifiPair(let requestID):
+    wifiService?.rejectPair(requestID:requestID)
+    log("wifi","userAction","source=\(source.rawValue), action=rejectPair");refreshWifiSnapshot()
+   case .forgetWifiPhone(let phoneID):
+    log("wifi","userAction","source=\(source.rawValue), action=forgetPhone")
+    Task{await wifiService?.forget(phoneID:phoneID);refreshWifiSnapshot()}
+   case .setWifiAutoConnect(let enabled):
+    var next=snapshot.settings;next.wifiAutoConnect=enabled
+    do{try store.save(next);snapshot.settings=next;log("wifi","userAction","source=\(source.rawValue), action=setAutoConnect, enabled=\(enabled)");applyWifiAutoConnectSetting()}
+    catch{log("wifi","settingsFailed",error.localizedDescription)}
    case .openPhoneSettings:
     log("permission","userAction","source=\(source.rawValue), action=openPhoneSettings, device=\(deviceAlias(snapshot.selectedDeviceID ?? ""))")
     if let serial=snapshot.selectedDeviceID {Task{do{_ = try await adb.run(serial,["shell","am","start","-a","android.settings.APPLICATION_DETAILS_SETTINGS","-d","package:com.zjx.usblinkmic"])}catch{log("permission","failed",error.localizedDescription)}}}
@@ -330,7 +362,7 @@ private final class AudioDelivery: @unchecked Sendable {
     try store.save(settings)
     snapshot.settings=settings
     output.gain=Float(settings.gain)
-    output.muted=settings.muted
+    output.muted=settings.muted;applyWifiAutoConnectSetting()
     snapshot.isSavingSettings=false
     snapshot.settingsError=nil
     snapshot.settingsSavedRevision &+= 1
@@ -366,7 +398,7 @@ private final class AudioDelivery: @unchecked Sendable {
     try store.save(settings)
     snapshot.settings=settings
     output.gain=Float(settings.gain)
-    output.muted=settings.muted
+    output.muted=settings.muted;applyWifiAutoConnectSetting()
     snapshot.settingsError=nil
     snapshot.settingsSavedRevision &+= 1
     snapshot.settingsMessage="设置已保存，请点击开始重新连接"
@@ -508,11 +540,12 @@ private final class AudioDelivery: @unchecked Sendable {
   guard !Task.isCancelled,!quitting,!snapshot.isSavingSettings,owned[module]==nil,!stopping.contains(module) else{return}
   let executionIntent=microphoneIntent
   let began=ProcessInfo.processInfo.systemUptime
-  let id=UUID().uuidString
-  let settings=snapshot.settings
+  let grant=module == .microphone ? autoGrant : nil
+  let id=grant?.sessionID ?? UUID().uuidString
+  let settings=module == .microphone ? microphoneSettings() : snapshot.settings
   let token=UUID().uuidString.replacingOccurrences(of:"-",with:"").lowercased()
-  let sessionToken=(module == .microphone && settings.transport == .wifi) ? settings.pairingCode : token
-  let serial=snapshot.selectedDeviceID ?? ""
+  let sessionToken=grant?.token ?? ((module == .microphone && settings.transport == .wifi) ? settings.pairingCode : token)
+  let serial=grant != nil ? "" : (snapshot.selectedDeviceID ?? "")
   if module == .microphone {
    audioWatchdog.begin(id);snapshot.receivedFrames=0;snapshot.effectiveAudio=nil;audioPacketCount=0;lastSnapshotTelemetryAt=0;phoneSilenced=nil;phoneAudioDiagnostics="unknown";audioControlFailures=0;audioMetricsAt=ProcessInfo.processInfo.systemUptime;audioPollAt=0;lastRenderCallbacks=0;renderProgressAt=ProcessInfo.processInfo.systemUptime;outputRestartCount=0;audioAnomalyAt=0;lastDroppedFrames=0;lastBacklogFrames=0
    snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected;telemetry.reset()
@@ -635,7 +668,8 @@ private final class AudioDelivery: @unchecked Sendable {
   let outputErrors=SettingsValidator.outputErrors(settings,outputs:currentOutputs(forceRefresh:true))
   guard outputErrors.isEmpty else{throw LinkError.failure("DRIVER_REQUIRED",outputErrors.joined(separator:"；"))}
   var wifiResolvedTarget: WifiTargetResolution?
-  if settings.transport == .wifi {
+  let isAutoWifi=autoGrant?.sessionID == id
+  if settings.transport == .wifi,!isAutoWifi {
    var excluded = Set<String>()
    if let ncmInterface { excluded.insert(ncmInterface) }
    if let services = try? await ncmServices().list() {
@@ -665,7 +699,7 @@ private final class AudioDelivery: @unchecked Sendable {
   let delivery = AudioDelivery(input: input)
   audioDelivery = (id, delivery)
   let sessionToken = owned[.microphone]?.token ?? settings.pairingCode
-  try receiver.start(settings:settings,session:settings.transport == .usb ? id:"wifi",expectedToken:sessionToken,onHandshake:{[weak self, input] clientAudio in
+  try receiver.start(settings:settings,session:(settings.transport == .usb || isAutoWifi) ? id:"wifi",expectedToken:sessionToken,onHandshake:{[weak self, input] clientAudio in
    input.updateSourceParameters(clientAudio)
    Task { @MainActor [weak self] in
     guard let self, self.valid(.microphone,id) else { return }
@@ -705,6 +739,10 @@ private final class AudioDelivery: @unchecked Sendable {
    }
   },onError:{[weak self] message in Task{@MainActor in await self?.failAudio(id,message)}})
   snapshot.audioState = .handshake
+  if isAutoWifi {
+   status(.microphone,.connecting,"等待手机发送音频","已通过可信连接准备好接收；收到第一包 PCM 后才显示传输中")
+   return
+  }
   if let resolvedTarget = wifiResolvedTarget {
    let codeHint = settings.pairingCode.isEmpty ? "无需配对码（可留空）" : "已启用配对码校验"
    if resolvedTarget.isAmbiguous {
@@ -713,15 +751,13 @@ private final class AudioDelivery: @unchecked Sendable {
     status(.microphone, .connecting, "存在多个局域网地址，请在设置中选择", "检测到多个活动局域网地址（\(candidateList)），无法判断手机所在网段；请在设置中选择「供手机连接的 Mac 地址」或在手机填写对应地址、端口 \(settings.audioPort)（\(codeHint)）")
     return
    }
-   if !serial.isEmpty, let targetHost = resolvedTarget.host {
+   if !serial.isEmpty, resolvedTarget.host != nil {
     do {
      let devices = ADB.devices(try await adb.run(nil, ["devices"], timeout: 4))
      adbServerWarm = true
      if devices.contains(where: { $0.0 == serial && $0.1 == "device" }) {
       try await prepareCompanion(.microphone, id, serial)
-      let audio = settings.audio
-      var args = ["shell", "am", "start", "-f", "0x18000000", "-n", Capabilities.androidControlComponent, "--es", "mode", "wifi", "--es", "session", "wifi", "--es", "wifiHost", targetHost, "--ez", "wifiHostExplicit", resolvedTarget.isUserSpecified ? "true" : "false", "--ei", "rate", String(audio.sampleRate), "--ei", "channels", String(audio.channels), "--ei", "format", audio.format.rawValue, "--es", "source", audio.source.rawValue, "--ei", "port", String(settings.audioPort), "--ei", "controlPort", String(settings.controlPort)]
-      if !settings.pairingCode.isEmpty { args += ["--es", "token", settings.pairingCode] }
+      let args = try Self.wifiLaunchArguments(settings: settings, target: resolvedTarget)
       _ = try await adb.run(serial, args, timeout: 4)
       log("microphone", "wifiPhoneSynced", "session=\(id), device=\(deviceAlias(serial)), explicitHost=\(resolvedTarget.isUserSpecified), port=\(settings.audioPort), 已通过USB向手机同步Wi-Fi目标地址与端口并请求启动")
      }
@@ -749,8 +785,21 @@ private final class AudioDelivery: @unchecked Sendable {
    try await Task.sleep(nanoseconds:1_000_000_000)
   }
  }
+ static func wifiLaunchArguments(settings: Settings, target: WifiTargetResolution) throws -> [String] {
+  guard !target.isAmbiguous, let host = target.host else {
+   throw LinkError.failure("WIFI_TARGET_UNAVAILABLE", "请先选择供手机连接的 Mac 局域网地址")
+  }
+  let audio = settings.audio
+  // Starting from Mac selects this validated endpoint for the session, including
+  // the single eligible address found automatically. Android must replace its
+  // saved target from a previous network instead of silently connecting there.
+  var args = ["shell", "am", "start", "-f", "0x18000000", "-n", Capabilities.androidControlComponent, "--es", "mode", "wifi", "--es", "session", "wifi", "--es", "wifiHost", host, "--ez", "wifiHostExplicit", "true", "--ei", "rate", String(audio.sampleRate), "--ei", "channels", String(audio.channels), "--es", "format", audio.format.rawValue, "--es", "source", audio.source.rawValue, "--ei", "port", String(settings.audioPort), "--ei", "controlPort", String(settings.controlPort)]
+  if !settings.pairingCode.isEmpty { args += ["--es", "token", settings.pairingCode] }
+  return args
+ }
  private func failAudio(_ id:String,_ message:String) async {
   guard microphoneIntent != nil,valid(.microphone,id),audioRecovery==nil,let session=owned[.microphone],!failingAudioSessions.contains(id) else{return}
+  if autoGrant?.sessionID == id {await failAutoWifi(id,message);return}
   let failureIntent=microphoneIntent
   failingAudioSessions.insert(id);defer{failingAudioSessions.remove(id)}
   log("audio","failure","session=\(id), frames=\(audioPacketCount), reason=\(message), \(output.diagnostics)")
@@ -872,7 +921,7 @@ private final class AudioDelivery: @unchecked Sendable {
    if outputRestartCount<2 {
     outputRestartCount+=1
     do {
-     try output.restartCurrentDevice(snapshot.settings)
+     try output.restartCurrentDevice(microphoneSettings())
      lastRenderCallbacks=output.statistics.renderCallbacks
      renderProgressAt=now
      log("audio","outputRestarted","session=\(id), attempt=\(outputRestartCount), output=\(snapshot.settings.outputUID), \(output.diagnostics)")
@@ -1345,6 +1394,11 @@ private final class AudioDelivery: @unchecked Sendable {
     log("audio","sessionEnd","session=\(session.id), packets=\(audioPacketCount), \(output.diagnostics), receiver={\(receiver.diagnostics)}, telemetry={\(telemetry.diagnostics)}")
    }
    receiver.stop();output.stop();audioDelivery=nil
+   if autoGrant?.sessionID == session.id {
+    let reason = failingAudioSessions.contains(session.id) ? "audioFailed" : (source == .phone ? "phoneRequested" : "macStopped")
+    autoGrant=nil
+    wifiService?.sessionEndedByHost(sessionID:session.id,reason:reason)
+   }
    audioPacketCount=0;lastSnapshotTelemetryAt=0;lastRenderCallbacks=0;outputRestartCount=0;renderProgressAt=ProcessInfo.processInfo.systemUptime
    snapshot.level=0;snapshot.waveform=[];telemetry.reset();snapshot.audioState = .disconnected;audioWatchdog.stop(session.id);snapshot.receivedFrames=0;snapshot.effectiveAudio=nil
   }
@@ -1399,6 +1453,8 @@ private final class AudioDelivery: @unchecked Sendable {
  }
  private func performShutdown(timeout:TimeInterval) async -> Bool {
   quitting=true
+  wifiListener?.stop();wifiTicker?.cancel();wifiTicker=nil
+  await wifiService?.shutdown()
   log("shutdown","started","timeout=\(String(format:"%.2f",timeout))s, owned=[\(owned.keys.map(\.rawValue).sorted().joined(separator:","))]")
   revokeMicrophoneIntent("shutdown")
   audioDeviceObserver?.stop();audioDeviceObserver=nil
@@ -1470,6 +1526,7 @@ private final class AudioDelivery: @unchecked Sendable {
   }
   shutdownDeadlineExpired=true
   quitting=true
+  wifiListener?.stop();wifiTicker?.cancel();wifiTicker=nil
   activeSessions.removeAll()
   processGroup.cancelAll()
   audioDeviceObserver?.stop();audioDeviceObserver=nil
@@ -1546,4 +1603,175 @@ private final class AudioDelivery: @unchecked Sendable {
 
   return .terminateLater
  }
+}
+
+// MARK: - Automatic Wi-Fi connection
+
+extension SessionController: WifiSessionHost {
+ /// Settings used by the microphone pipeline: for an authenticated Wi-Fi session the phone's
+ /// negotiated audio format and Wi-Fi transport apply, without touching the saved settings.
+ fileprivate func microphoneSettings() -> Settings {
+  var effective=snapshot.settings
+  if let grant=autoGrant {effective.transport = .wifi;effective.audio=grant.audio}
+  return effective
+ }
+
+ fileprivate func startWifiAutoConnectIfNeeded() {
+  guard wifiAutoConnectHost,wifiService==nil,!quitting else{refreshWifiSnapshot();return}
+  guard snapshot.settings.wifiAutoConnect else{wifiListenerState = .stopped;refreshWifiSnapshot();return}
+  guard let trust=wifiTrust else{refreshWifiSnapshot();return}
+  let name=Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+  let created=WifiControlService(trust:trust,host:self,macName:name)
+  let listener=WifiControlListener(service:created,configuration:.init(macID:trust.macID,macName:name,advertise:wifiAdvertise)) { [weak self] state in
+   Task {@MainActor in self?.wifiListenerChanged(state)}
+  }
+  wifiService=created;wifiListener=listener
+  do{try listener.start();log("wifi","listenerStart","Wi-Fi 自动连接监听已启动；advertise=\(wifiAdvertise)")}
+  catch{wifiListenerState = .failed(error.localizedDescription);log("wifi","listenerFailed",error.localizedDescription)}
+  wifiTicker=Task {[weak self] in
+   while !Task.isCancelled {
+    try? await Task.sleep(nanoseconds:1_000_000_000)
+    guard let self,!Task.isCancelled else{return}
+    await self.wifiService?.tick()
+    self.refreshWifiSnapshot()
+   }
+  }
+  refreshWifiSnapshot()
+ }
+
+ fileprivate func stopWifiAutoConnect() {
+  wifiTicker?.cancel();wifiTicker=nil
+  wifiListener?.stop();wifiListener=nil
+  let service=wifiService;wifiService=nil
+  wifiListenerState = .stopped
+  Task {await service?.shutdown();refreshWifiSnapshot()}
+  refreshWifiSnapshot()
+ }
+
+ fileprivate func applyWifiAutoConnectSetting() {
+  guard wifiAutoConnectHost else{return}
+  if snapshot.settings.wifiAutoConnect {startWifiAutoConnectIfNeeded()} else {stopWifiAutoConnect()}
+  refreshWifiSnapshot()
+ }
+
+ fileprivate func wifiListenerChanged(_ state:WifiListenerState) {
+  guard wifiListener != nil || state == .stopped else{return}
+  wifiListenerState=state
+  switch state {
+  case .waiting(let reason):log("wifi","listenerWaiting",reason)
+  case .failed(let reason):log("wifi","listenerFailed",reason)
+  case .ready(let port,let advertised):log("wifi","listenerReady","port=\(port), advertised=\(advertised)")
+  default:break
+  }
+  refreshWifiSnapshot()
+ }
+
+ fileprivate func pauseWifiAutoConnect() {
+  wifiService?.pausedByUser=true
+  log("wifi","paused","用户在 Mac 停止；本次打开期间不再自动开始拾音，点击开始或重新打开应用后恢复")
+  Task {await wifiService?.endActiveSession(reason:"macUser")}
+ }
+
+ fileprivate func refreshWifiSnapshot() {
+  var next=WifiAutoSnapshot()
+  next.trusted=(wifiTrust?.phones ?? []).map{TrustedPhoneInfo(id:$0.id,name:$0.name,pairedAt:Date(timeIntervalSince1970:TimeInterval($0.pairedAt)))}.sorted{$0.pairedAt>$1.pairedAt}
+  next.pendingPair=wifiService?.pendingPrompt
+  next.pausedByUser=wifiService?.pausedByUser ?? false
+  next.connectedPhoneName=wifiService?.connectedPhoneName
+  if let error=wifiTrustError {next.phase = .failed;next.message=error}
+  else if !wifiAutoConnectHost {next.phase = .off;next.message="Wi-Fi 自动连接未启用"}
+  else if !snapshot.settings.wifiAutoConnect {next.phase = .off;next.message="Wi-Fi 自动连接已关闭"}
+  else {
+   switch wifiListenerState {
+   case .failed(let reason):next.phase = .failed;next.message="无法在局域网发布服务：\(reason)"
+   case .waiting(let reason):next.phase = .failed;next.message="局域网服务未就绪：\(reason)。请在「系统设置 → 隐私与安全性 → 本地网络」允许 USB LinkMic，并确认已连接 Wi-Fi"
+   case .stopped,.starting:next.phase = .starting;next.message="正在启动 Wi-Fi 自动连接"
+   case .ready:
+    if next.pendingPair != nil {next.phase = .pairing;next.message="有手机请求绑定，请核对确认码"}
+    else if next.pausedByUser {next.phase = .paused;next.message="已手动停止；点击开始或重新打开应用后恢复自动连接"}
+    else if let id=autoGrant?.sessionID {
+     let streaming=wifiPhase(sessionID:id) == .streaming
+     next.phase=streaming ? .streaming:.preparing
+     next.message=streaming ? "已通过 Wi-Fi 接收手机音频":"手机已连接，正在等待音频"
+    } else {next.phase = .listening;next.message=next.trusted.isEmpty ? "等待手机首次绑定（在手机上选择这台 Mac）":"等待已绑定手机自动连接"}
+   }
+  }
+  if next != snapshot.wifiAuto {snapshot.wifiAuto=next}
+ }
+
+ // MARK: WifiSessionHost
+
+ public func wifiServiceChanged() {refreshWifiSnapshot()}
+
+ public func wifiPhase(sessionID:String) -> WifiSessionPhase {
+  guard autoGrant?.sessionID == sessionID,owned[.microphone]?.id == sessionID,activeSessions[.microphone] == sessionID else{return .ended}
+  return snapshot.audioState == .streaming && snapshot.microphone.phase == .running ? .streaming : .preparing
+ }
+
+ public func wifiEnd(sessionID:String,reason:String) async {
+  guard autoGrant?.sessionID == sessionID else{return}
+  log("wifi","sessionEnd","session=\(sessionID), reason=\(reason)")
+  revokeMicrophoneIntent("wifi-\(reason)")
+  if owned[.microphone]?.id == sessionID {await stop(.microphone,source:.phone)}
+  if autoGrant?.sessionID == sessionID {autoGrant=nil}
+  refreshWifiSnapshot()
+ }
+
+ public func wifiPrepare(_ request:WifiPrepareRequest) async -> WifiPrepareResult {
+  guard !quitting,!shutdownDeadlineExpired else{return .rejected(code:"MAC_QUITTING")}
+  guard !recovering,!recoveryBlocked,!snapshot.isSavingSettings else{return .rejected(code:"MAC_NOT_READY")}
+  guard owned[.microphone]==nil,jobs[.microphone]==nil,autoGrant==nil,!stopping.contains(.microphone) else{
+   log("wifi","prepareRejected","session=\(request.sessionID), reason=microphoneBusy")
+   return .rejected(code:"MAC_BUSY")
+  }
+  guard !usbNetworkTransition else{return .rejected(code:"MAC_NOT_READY")}
+  var probe=snapshot.settings;probe.transport = .wifi;probe.audio=request.audio
+  let outputErrors=SettingsValidator.outputErrors(probe,outputs:currentOutputs(forceRefresh:true))
+  guard outputErrors.isEmpty else{
+   log("wifi","prepareRejected","session=\(request.sessionID), reason=output")
+   return .rejected(code:"MAC_OUTPUT_UNAVAILABLE")
+  }
+  guard (1...65_535).contains(snapshot.settings.audioPort) else{return .rejected(code:"MAC_BAD_PORT")}
+  autoGrant=AutoWifiGrant(sessionID:request.sessionID,phoneID:request.phoneID,phoneName:request.phoneName,token:request.audioToken,audio:request.audio)
+  revokeMicrophoneIntent("wifiNewSession")
+  microphoneIntent=UUID();microphoneIntentSerial=nil;audioRetryCount=0
+  log("wifi","prepare","session=\(request.sessionID), rate=\(request.audio.sampleRate), channels=\(request.audio.channels), userInitiated=\(request.userInitiated)")
+  ProcessRunner.$currentGroup.withValue(processGroup) {start(.microphone)}
+  guard jobs[.microphone] != nil || owned[.microphone] != nil else{
+   autoGrant=nil;revokeMicrophoneIntent("wifiStartIgnored")
+   return .rejected(code:"MAC_NOT_READY")
+  }
+  let deadline=ProcessInfo.processInfo.systemUptime+6
+  while ProcessInfo.processInfo.systemUptime<deadline {
+   guard autoGrant?.sessionID == request.sessionID else{return .rejected(code:"SUPERSEDED")}
+   if owned[.microphone]?.id == request.sessionID,snapshot.audioState == .handshake,receiver.isReady {
+    refreshWifiSnapshot()
+    return .ready(audioPort:snapshot.settings.audioPort,audio:request.audio)
+   }
+   if snapshot.microphone.phase == .failed || (owned[.microphone]==nil && jobs[.microphone]==nil) {break}
+   try? await Task.sleep(nanoseconds:50_000_000)
+  }
+  if autoGrant?.sessionID == request.sessionID {
+   log("wifi","prepareFailed","session=\(request.sessionID), phase=\(snapshot.microphone.phase.rawValue), detail=\(snapshot.microphone.detail)")
+   revokeMicrophoneIntent("wifiPrepareFailed")
+   await stop(.microphone,source:.system)
+   autoGrant=nil
+  }
+  return .rejected(code:"MAC_START_FAILED")
+ }
+
+ /// The receiver or watchdog reported a failure for the automatic session. The session ends;
+ /// the phone is told and runs its own reconnect with a fresh authenticated `prepare`.
+ fileprivate func failAutoWifi(_ id:String,_ message:String) async {
+  guard valid(.microphone,id),!failingAudioSessions.contains(id) else{return}
+  failingAudioSessions.insert(id);defer{failingAudioSessions.remove(id)}
+  log("wifi","sessionFailure","session=\(id), frames=\(audioPacketCount), reason=\(message)")
+  revokeMicrophoneIntent("wifiFailure")
+  wifiService?.sessionEndedByHost(sessionID:id,reason:"audioFailed")
+  await stop(.microphone,source:.system)
+  if owned[.microphone]==nil {status(.microphone,.stopped,"手机连接已断开","正在等待已绑定手机自动重连")}
+  refreshWifiSnapshot()
+ }
+
+ internal var wifiControlPort: UInt16? { wifiListener?.port }
 }

@@ -41,13 +41,34 @@ object Runtime {
   return launch.intent.takeIf { SystemClock.elapsedRealtime()-launch.created<=15000 }
  }
  private var server: ServerSocket? = null
- private val main by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+ private val main: android.os.Handler? by lazy {
+  try {
+   android.os.Handler(android.os.Looper.getMainLooper())
+  } catch (_: Throwable) {
+   null
+  }
+ }
  private var diagnosticFile: File? = null
  val bootId: String = UUID.randomUUID().toString().replace("-", "").take(8).lowercase()
  private val bootElapsedMs: Long = try { SystemClock.elapsedRealtime() } catch (_: Throwable) { 0L }
  private val rateLimitLastMs = ConcurrentHashMap<String, Long>()
  private val rateLimitSuppressed = ConcurrentHashMap<String, Int>()
  @Volatile private var audioUiVisible = false
+ @Volatile var wifiAutoConnector: WifiAutoConnector? = null
+
+ fun getWifiAutoConnector(context: Context): WifiAutoConnector {
+  val existing = wifiAutoConnector
+  if (existing != null) return existing
+  synchronized(this) {
+   val doubleCheck = wifiAutoConnector
+   if (doubleCheck != null) return doubleCheck
+   val app = context.applicationContext
+   val store = com.zjx.usblinkmic.support.WifiTrustStore(app)
+   val created = WifiAutoConnector(app, store)
+   wifiAutoConnector = created
+   return created
+  }
+ }
  private data class PendingAudioMeter(val request: Request, val update: (AppSnapshot) -> AppSnapshot)
  private val audioMeterLock = Any()
  private var pendingAudioMeter: PendingAudioMeter? = null
@@ -166,14 +187,26 @@ object Runtime {
   try {diagnosticFile?.writeText("");update {it.copy(logs=emptyList())}}
   catch(e:Exception){Log.e("USBLinkMic","diagnostics clear failed: ${e.javaClass.simpleName}")}
  }
- fun update(block: (AppSnapshot) -> AppSnapshot) { main.post { state.value = block(state.value) } }
+ fun update(block: (AppSnapshot) -> AppSnapshot) {
+  val handler = main
+  if (handler != null) {
+   handler.post { state.value = block(state.value) }
+  } else {
+   state.value = block(state.value)
+  }
+ }
  fun setAudioUiVisible(visible: Boolean) {
   audioUiVisible = visible
   if (!visible) synchronized(audioMeterLock) { pendingAudioMeter = null }
  }
  fun isAudioUiVisible(): Boolean = audioUiVisible
  fun updateAudio(request: Request, block: (AppSnapshot) -> AppSnapshot) {
-  main.post { if(audioRequest === request && !request.cancelled) state.value = block(state.value) }
+  val handler = main
+  if (handler != null) {
+   handler.post { if(audioRequest === request && !request.cancelled) state.value = block(state.value) }
+  } else {
+   if(audioRequest === request && !request.cancelled) state.value = block(state.value)
+  }
  }
  fun updateAudioMeter(request: Request, block: (AppSnapshot) -> AppSnapshot) {
   val shouldPost = synchronized(audioMeterLock) {
@@ -184,10 +217,15 @@ object Runtime {
     true
    }
   }
-  if (shouldPost && !main.post(audioMeterDrain)) {
-   synchronized(audioMeterLock) {
-    pendingAudioMeter = null
-    audioMeterDrainScheduled = false
+  val handler = main
+  if (shouldPost) {
+   if (handler == null) {
+    drainAudioMeter()
+   } else if (!handler.post(audioMeterDrain)) {
+    synchronized(audioMeterLock) {
+     pendingAudioMeter = null
+     audioMeterDrainScheduled = false
+    }
    }
   }
  }
@@ -204,10 +242,15 @@ object Runtime {
     false
    } else true
   }
-  if (shouldPostAgain && !main.post(audioMeterDrain)) {
-   synchronized(audioMeterLock) {
-    pendingAudioMeter = null
-    audioMeterDrainScheduled = false
+  val handler = main
+  if (shouldPostAgain) {
+   if (handler == null) {
+    drainAudioMeter()
+   } else if (!handler.post(audioMeterDrain)) {
+    synchronized(audioMeterLock) {
+     pendingAudioMeter = null
+     audioMeterDrainScheduled = false
+    }
    }
   }
  }
@@ -323,10 +366,26 @@ object Runtime {
   log(request.mode, "stop", "停止会话 mode=${request.mode}", session = request.session, source = source)
   update { when(request.mode){"ncm" -> it.copy(phoneInternet=ModuleStatus());"vpn" -> it.copy(macInternet=ModuleStatus());else -> if(audioRequest === request || audioRequest == null) it.copy(microphone=ModuleStatus(),level=0.0,waveform=emptyList(),controlledByMac=false) else it} }
   when(request.mode) {
-   "audio", "wifi" -> if(audioRequest === request) { context.stopService(Intent(context, MicrophoneService::class.java)); MicrophoneService.stopCapture(request); audioRequest = null }
+   "audio", "wifi" -> if(audioRequest === request) {
+    context.stopService(Intent(context, MicrophoneService::class.java))
+    MicrophoneService.stopCapture(request)
+    audioRequest = null
+    wifiAutoConnector?.onMicrophoneServiceStopped(request.session, request.error)
+   }
    "vpn" -> if(vpnRequest === request) context.stopService(Intent(context, LinkVpnService::class.java))
    "ncm" -> update { it.copy(phoneInternet=ModuleStatus()) }
   }
+ }
+ fun onMicrophoneServiceStopped(session: String, error: String = "") {
+  val current = audioRequest
+  if (current != null && current.session == session) {
+   current.cancelled = true
+   if (error.isNotBlank() && current.error.isBlank()) {
+    current.error = error
+   }
+   audioRequest = null
+  }
+  wifiAutoConnector?.onMicrophoneServiceStopped(session, error)
  }
  fun handleAdbCancel(context: Context, intent: Intent): Boolean {
   val session = intent.getStringExtra("session") ?: return false

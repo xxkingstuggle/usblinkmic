@@ -652,6 +652,7 @@ class MicrophoneService : Service() {
             capture.closeResources()
             try { ownedAudio?.release() } catch (_: Exception) { }
             val stopThisStart = releaseCapture(capture)
+            Runtime.onMicrophoneServiceStopped(r.session, r.error)
             if (stopThisStart) stopSelf(startId)
         }
     }
@@ -683,6 +684,7 @@ class MicrophoneService : Service() {
                 Runtime.log("audio", "serviceDestroyed", "服务结束时本次会话未收到明确停止")
             }
             stopCapture(currentRequest)
+            Runtime.onMicrophoneServiceStopped(currentRequest.session, currentRequest.error)
             if (Runtime.audioRequest === currentRequest) {
                 Runtime.audioRequest = null
                 val snapshot = Runtime.state.value

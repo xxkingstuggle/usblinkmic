@@ -5,7 +5,7 @@ import java.net.InetAddress
 
 object LogRedactor {
     private val assignments = Regex(
-        "(?i)(\\b(?:serial|token|pairingCode)\\s*=\\s*)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;})\\]]+)"
+        "(?i)(\\b(?:serial|token|pairingCode|secret|sharedSecret|keyHex|pairingKey|audioToken|proof|nonce)\\s*=\\s*)(?:\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|[^\\s,;})\\]]+)"
     )
     private val homePaths = Regex("(?<![\\w])(/Users/[^/\\s]+(?:/[^\\s\"'<>]*)?|~/[^\\s\"'<>]*)")
     private val ipv4Candidates = Regex("(?<![A-Za-z0-9_.])(?:[0-9]{1,3}\\.){3}[0-9]{1,3}(?![A-Za-z0-9_.])")

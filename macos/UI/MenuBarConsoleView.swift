@@ -56,6 +56,9 @@ public struct MenuBarConsoleView: View {
     private var palette: ZenPalette { ZenPalette(colorScheme) }
 
     private var deviceDisplayName: String {
+        if let connected = snapshot.wifiAuto.connectedPhoneName, !connected.isEmpty {
+            return connected
+        }
         if let id = snapshot.selectedDeviceID,
            let device = snapshot.devices.first(where: { $0.id == id }) {
             return device.name
