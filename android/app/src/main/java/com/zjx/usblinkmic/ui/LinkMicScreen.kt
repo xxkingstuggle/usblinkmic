@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -73,6 +74,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zjx.usblinkmic.contracts.*
@@ -300,11 +302,15 @@ private fun MicrophonePage(
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = palette.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             text = "请确认 Mac 屏幕显示相同的验证码：",
                             fontSize = 12.sp,
                             color = palette.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -328,14 +334,32 @@ private fun MicrophonePage(
         val untrustedDiscovered = snapshot.wifiAuto.discovered.filter { !it.isTrusted }
         if (!running && untrustedDiscovered.isNotEmpty()) {
             ZenGroup(palette, "发现局域网 Mac") {
-                untrustedDiscovered.forEach { mac ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                untrustedDiscovered.forEachIndexed { index, mac ->
+                    if (index > 0) {
+                        HorizontalDivider(color = palette.divider)
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(mac.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = palette.textPrimary)
-                            Text("${mac.host}:${mac.controlPort}", fontSize = 11.5.sp, color = palette.textSecondary)
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = mac.name,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "${mac.host}:${mac.controlPort}",
+                                fontSize = 12.sp,
+                                color = palette.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                         ZenSecondaryButton("配对绑定", palette) {
                             onAction(UserAction.PairWithMac(mac.id))
@@ -731,17 +755,43 @@ private fun SettingsPage(
                 )
             }
             if (snapshot.wifiAuto.trusted.isNotEmpty()) {
-                snapshot.wifiAuto.trusted.forEach { mac ->
+                HorizontalDivider(color = palette.divider)
+                snapshot.wifiAuto.trusted.forEachIndexed { index, mac ->
+                    if (index > 0) {
+                        HorizontalDivider(color = palette.divider)
+                    }
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(mac.name, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = palette.textPrimary)
-                            Text("ID: ${mac.id.take(8)}", fontSize = 11.sp, color = palette.textTertiary)
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = mac.name,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "ID: ${mac.id.take(8)}",
+                                fontSize = 11.sp,
+                                color = palette.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
-                        ZenSecondaryButton("解除信任", palette) {
+                        ZenSecondaryButton(
+                            title = "解除信任",
+                            palette = palette,
+                            modifier = Modifier.wrapContentWidth(),
+                        ) {
                             onAction(UserAction.ForgetMac(mac.id))
                         }
                     }
@@ -1447,18 +1497,23 @@ private fun ZenPrimaryButton(
 }
 
 @Composable
-private fun ZenSecondaryButton(title: String, palette: ZenPalette, onClick: () -> Unit) {
+private fun ZenSecondaryButton(
+    title: String,
+    palette: ZenPalette,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    onClick: () -> Unit,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .height(46.dp)
             .clip(CircleShape)
             .border(1.dp, palette.border, CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = palette.textPrimary)
+        Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = palette.textPrimary, maxLines = 1)
     }
 }
 
