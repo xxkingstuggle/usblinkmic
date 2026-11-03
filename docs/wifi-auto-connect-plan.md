@@ -1,30 +1,22 @@
-# Wi-Fi 自动连接：现场审查与实施计划
+# Wi-Fi 自动连接：实施状态与原始审查计划
 
-日期：2026-11-04。状态：首轮审查 7 项返工及测试隔离整改已全部完成。双端代码实现与离线单元测试全部通过（Mac 39 项测试 0 失败，Android 12 项测试 0 失败）。候选安装包（版本 4.0.17，Review-2）已完成构建与自签名，暂存在 `artifacts/agy-wifi-auto-connect/review-2/4.0.17/`；协议规范见 `contracts/wifi-auto-connect-v1.md`；待用户真机与真实局域网/热点场景验收。
+日期：2026-11-04。当前为 **4.0.17 Review-3 待真机测试候选**。功能代码提交为 `61049ba`，独立候选目录是 `artifacts/agy-wifi-auto-connect/review-3/4.0.17/`。普通 Wi-Fi、这台 Android 手机热点、锁屏后持续采音以及实际 BlackHole 输入均尚未设备验收。
 
-## 实施进展记录 (Implementation Status)
+## 当前实现与验证范围
 
-- **Mac 端实现**：
-  - `macos/Contracts/Models.swift`：增加 `wifiRevision = 1`、`bonjourServiceType = "_usblinkmic._tcp"`、`wifiAutoConnect` 开关模型（向下兼容解码）、`WifiAutoSnapshot`、`WifiPairPrompt`、`TrustedPhoneInfo` 与配对授权动作。
-  - `macos/Support/WifiCrypto.swift`：实现 P-256 ECDH 密钥交换、HKDF/HMAC-SHA256、6 位 SAS 校验码、音频 token 派生及常量时间比较。
-  - `macos/Support/WifiTrustStore.swift`：基于 `~/.usblinkmic/wifi-trust.json`（0600 权限）管理稳定 Mac 身份及可信手机记录。
-  - `macos/Support/WifiControlService.swift`：实现纯内存/MainActor 控制状态机，覆盖 hello、配对提问、互相鉴权、音频会话准备、状态同步、单端停止及防重放/防爆破限流。
-  - `macos/Core/WifiControlListener.swift`：基于 NWListener 的 TCP 监听与 Bonjour 服务广播（支持隔离回环模式）。
-  - `macos/Core/SessionController.swift`：整合 `WifiSessionHost`，支持自动发现准备、手动停止暂停、防旧回调抢占。
-  - `macos/UI/`：MicrophoneWorkspaceView 与 MenuBarConsoleView 增加配对提示横幅（含 6 位校验码对比、允许/拒绝）及已连接 Wi-Fi 手机名称显示；DevicesAndLogsView 增加配对与可信设备管理列表。
-  - **离线测试**：XCTest 96 个测试全部通过（含 25 个 WifiControlService 状态机测试、5 个密码学向量测试、4 个回环 Socket 隔离测试、3 个 WifiLaunchCommandTests）。
-- **Android 端实现**：
-  - `android/app/build.gradle.kts`：版本升级为 `versionCode = 40017`，`versionName = "4.0.17"`。
-  - `android/app/src/main/java/com/zjx/usblinkmic/contracts/Models.kt`：增加 `WIFI_REVISION = 1`、`BONJOUR_SERVICE_TYPE`、`wifiAutoConnect` 设置、`WifiAutoSnapshot`、`DiscoveredMac`、`TrustedMacInfo`、`WifiAutoPhase` 等。
-  - `android/app/src/main/java/com/zjx/usblinkmic/support/WifiCrypto.kt`：与 Mac 端完全一致的 P-256、HKDF、HMAC、SAS 密码学引擎。
-  - `android/app/src/main/java/com/zjx/usblinkmic/support/WifiTrustStore.kt`：SharedPreferences 持久化稳定手机身份与可信 Mac 列表。
-  - `android/app/src/main/java/com/zjx/usblinkmic/platform/WifiAutoConnector.kt`：Android NSD 自动发现 `_usblinkmic._tcp`、发起配对/认证/会话准备、网络重连与用户手动停止暂停。
-  - `android/app/src/main/java/com/zjx/usblinkmic/MainActivity.kt` & `LinkMicScreen.kt`：整合自动发现与配对横幅（6 位对比码）、发现列表、可信设备解除。
-  - **离线测试**：JUnit 19 个单元测试全部通过（含 5 个跨平台向量与回环状态机测试、14 个基础支持测试），`lintDebug` 0 错误。
-- **打包与验证**：
-  - `scripts/package.sh`：支持动态版本号 `4.0.17`，在 Mac `Info.plist` 中补充 `NSBonjourServices: ['_usblinkmic._tcp']` 及 `NSLocalNetworkUsageDescription`。
-  - 产物在 `artifacts/agy-wifi-auto-connect/4.0.17/` 生成并通过 `verify-release.py`、`codesign`、`apksigner` 全部校验。
-  - 严守安全红线：未触碰 `/Applications/USB LinkMic.app`，未杀或干扰正在运行的 PID 21927，未连接真实设备 ADB。
+- Mac 使用 Bonjour 发布轻量控制入口；Android NSD 解析端点，首次在手机选择 Mac、对照六位码并在 Mac 允许绑定，之后使用保存的信任记录自动认证。发现结果不依赖之前保存的 IP。
+- 两端用 P-256 ECDH 和 HMAC-SHA256 派生配对密钥、认证控制消息和会话音频令牌。没有实现 HKDF 或音频加密，不能作相应保证。
+- Mac 的信任文件位于 `~/Library/Application Support/USBLinkMic-v4/wifi-trust.json`，文件权限为 0600。Android 使用应用私有 SharedPreferences 保存手机身份和可信 Mac。
+- 已实现会话代际、按所有权清理连接、签名状态心跳、无合法响应时的超时、用户暂停，以及 Activity 与正在运行的前台采音服务的生命周期区分。
+- 主代理在最终源码上复核：39 项指定 Mac 隔离测试、19 项 Android `WifiAutoConnectTests` 通过；资源清单、内外 APK 一致性、Mac 签名、Android v2/v3 签名、秘密扫描及差异检查通过。这些结果不代表全套测试或设备验收。Mac release 构建、Android release 构建和 `lintDebug` 也通过。复核日志在 `artifacts/agy-wifi-auto-connect/review-3/parent-*.log`。
+- 候选未安装或启动；`/Applications/USB LinkMic.app` 的主程序、Info.plist、内置 APK 与任务开始时的指纹一致，现用进程在复核时仍为原 PID。
+- 先前日志测试的版本断言从硬编码 4.0.15 改为 `Capabilities.version`，这是过时版本预期的修正，不是日志保留算法修复；不计为本功能新增测试。
+
+实际协议见 [Wi-Fi 自动连接协议](../contracts/wifi-auto-connect-v1.md)，用户操作与回滚见 [候选测试指南](wifi-auto-connect-testing.md)。10 秒首次建连、网络恢复后 20 秒重连仍是待真机验证的目标。
+
+## 实现前的审查记录
+
+以下保留最初审查及计划。关于“尚无自动发现”的描述、旧行号、旧现场地址均属于实现前证据，不代表当前候选的能力或设备验收结论。
 
 ## 结论 (Verdict)
 
@@ -110,7 +102,7 @@
 | 数据真实有效 | 接收帧数持续增长、电平有响应，并检查 BlackHole 端实际输入；发现成功或 TCP connected 不等于麦克风验收 |
 | 回归 | 现有 USB 音频、Wi-Fi 手动连接及 USB 两个供网方向保留；必要测试不得用改变原断言来通过 |
 
-先给发现和状态机建立失败用例，再实现功能；两端成套构建、安装并真机验收。已有独立日志保留测试失败另行记录，不混入本功能的通过数量。
+先给发现和状态机建立失败用例，再实现功能；两端成套构建、安装并真机验收。原日志版本断言的历史失败及本次修正单独记录，不混入本功能新增测试数量。
 
 ## 未解疑问 (Open Questions)
 
