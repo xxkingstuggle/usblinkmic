@@ -677,6 +677,12 @@ class MicrophoneService : Service() {
     }
 
     override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         val currentRequest = request
         if (currentRequest != null) {
             if (!currentRequest.cancelled && currentRequest.accepted && currentRequest.error.isBlank()) {
@@ -685,7 +691,7 @@ class MicrophoneService : Service() {
             }
             stopCapture(currentRequest)
             Runtime.onMicrophoneServiceStopped(currentRequest.session, currentRequest.error)
-            if (Runtime.audioRequest === currentRequest) {
+            if (Runtime.audioRequest === currentRequest || Runtime.audioRequest == null) {
                 Runtime.audioRequest = null
                 val snapshot = Runtime.state.value
                 if (!currentRequest.cancelled && currentRequest.accepted && currentRequest.error.isNotBlank()) {

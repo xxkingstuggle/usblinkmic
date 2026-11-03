@@ -153,7 +153,17 @@ class MainActivity : ComponentActivity() {
    if(Runtime.vpnRequest!=null){Runtime.fail(request,"VPN_BUSY: 请先停止现有VPN会话");return};Runtime.vpnRequest=request;LinkVpnService::class.java
   } else {
    if(!Runtime.parametersSupported(request.settings.audio)){Runtime.fail(request,"UNSUPPORTED_AUDIO: 设备不支持所选参数");return}
-   if(Runtime.audioRequest!=null){Runtime.fail(request,"AUDIO_BUSY: 请先停止现有音频会话");return};Runtime.audioRequest=request;MicrophoneService::class.java
+   val existingAudio = Runtime.audioRequest
+   if (existingAudio != null) {
+    if (existingAudio.session == request.session) return
+    if (existingAudio.cancelled) {
+     Runtime.stop(this, existingAudio, source = "replaceStale")
+    } else {
+     Runtime.fail(request, "AUDIO_BUSY: 请先停止现有音频会话")
+     return
+    }
+   }
+   Runtime.audioRequest=request;MicrophoneService::class.java
   }
   try { startForegroundService(Intent(this,service).putExtra("session",request.session)) } catch(e: Exception){if(Runtime.audioRequest===request)Runtime.audioRequest=null;if(Runtime.vpnRequest===request)Runtime.vpnRequest=null;Runtime.fail(request,"SERVICE_START: ${e.message}")}
  }

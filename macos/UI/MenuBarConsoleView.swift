@@ -59,6 +59,9 @@ public struct MenuBarConsoleView: View {
         if let connected = snapshot.wifiAuto.connectedPhoneName, !connected.isEmpty {
             return connected
         }
+        if snapshot.settings.transport == .wifi, let first = snapshot.wifiAuto.trusted.first {
+            return first.name
+        }
         if let id = snapshot.selectedDeviceID,
            let device = snapshot.devices.first(where: { $0.id == id }) {
             return device.name
@@ -66,7 +69,7 @@ public struct MenuBarConsoleView: View {
         if let first = snapshot.devices.first {
             return first.name
         }
-        return "等待手机连接"
+        return snapshot.settings.transport == .wifi ? "等待 Wi-Fi 手机" : "等待手机连接"
     }
 
     private var isMicRunning: Bool {

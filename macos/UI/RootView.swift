@@ -328,6 +328,15 @@ public struct RootView: View {
     }
 
     private var selectedDeviceSummary: String {
+        if snapshot.settings.transport == .wifi {
+            if let connected = snapshot.wifiAuto.connectedPhoneName, !connected.isEmpty {
+                return "\(connected) · Wi-Fi"
+            }
+            if let first = snapshot.wifiAuto.trusted.first {
+                return "\(first.name) · Wi-Fi"
+            }
+            return "Wi-Fi 等待手机"
+        }
         if let id = snapshot.selectedDeviceID,
            let device = snapshot.devices.first(where: { $0.id == id }) {
             return "\(device.name) · \(device.state.shortLabel)"

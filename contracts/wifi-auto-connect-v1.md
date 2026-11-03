@@ -176,6 +176,7 @@ $$MAC = \text{HMAC-SHA256}(psk, \text{"msg|" + direction + "|" + clientNonce + "
 | :--- | :--- | :--- | :--- |
 | `prepare` | C $\to$ S | 手机请求 Mac 分配音频接收端口与会话 ID | `sampleRate\|channels\|format\|source\|userInitiated(1或0)` |
 | `prepared` | S $\to$ C | Mac 成功绑定音频接收端口返回会话信息 | `session\|audioPort\|sampleRate\|channels\|format\|source` |
+| `event-start`| S $\to$ C | Mac 主动请求手机发起 prepare 启动音频会话 | 空字符串 `""` |
 | `status` | C $\to$ S | 客户端心跳请求（每 5 秒） | 空字符串 `""` |
 | `state` | S $\to$ C | 服务端会话状态响应（响应心跳或状态变迁） | `session\|state`（state 取值 `streaming` / `preparing` / `ended`） |
 | `stop` | C $\to$ S | 客户端请求停止音频会话 | `session\|reason`（如 `userStopped` / `phoneStop`） |
@@ -183,7 +184,15 @@ $$MAC = \text{HMAC-SHA256}(psk, \text{"msg|" + direction + "|" + clientNonce + "
 | `event-stop`| S $\to$ C | 服务端主动通知客户端会话已终止 | `session\|reason`（如 `macUser` / `audioFailed` / `macQuit`） |
 | `error` | S $\to$ C | 业务拒绝或错误 | 错误码字符串（如 `PAUSED_BY_USER` / `UNAVAILABLE`） |
 
-### 7.2 音频会话令牌与传输格式 (Audio Transport)
+### 7.2 控制通道与音频会话分离 (Idle Control vs Active Audio)
+1. **控制通道持久保活**：TCP 控制连接在认证成功后建立并独立保活。音频会话停止（无论由 Mac 或手机触发）只释放音频接收器/采音服务，控制连接保持于空闲已认证状态，心跳持续维持。
+2. **免 USB 双向重启**：
+   - Mac 端点击“开始拾音”：若控制通道处于空闲连接状态，Mac 通过已认证控制通道下发 `event-start`，手机收到后以 `userInitiated=1` 发起 `prepare` 恢复采音；若尚未连入，Mac 暴露等待连入状态，手机上线后自动完成连接。
+   - 手机端点击“开始拾音”：手机以 `userInitiated=1` 直接在已有控制通道发送 `prepare`，Mac 接收后清除本地暂停标志并返回 `prepared` 恢复接收。
+   - 彻底避免 Stop 破坏控制连接导致的死锁与 ADB 依赖。
+
+
+### 7.3 音频会话令牌与传输格式 (Audio Transport)
 在 `prepared` 返回后，两端派生用于音频连接首行握手的音频令牌：
 $$\text{AudioToken} = \text{HMAC-SHA256}(psk, \text{"audio|" + sessionID + "|" + clientNonce + "|" + serverNonce})$$
 音频传输使用独立 TCP 连接至 `audioPort`。连接建立后，客户端首行发送单行 JSON 握手报文：

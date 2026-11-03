@@ -114,6 +114,9 @@ struct MicrophoneWorkspaceView: View {
         if let connected = snapshot.wifiAuto.connectedPhoneName, !connected.isEmpty {
             return connected
         }
+        if snapshot.settings.transport == .wifi, let firstTrusted = snapshot.wifiAuto.trusted.first {
+            return firstTrusted.name
+        }
         if let id = snapshot.selectedDeviceID,
            let device = snapshot.devices.first(where: { $0.id == id }) {
             return device.name
@@ -121,7 +124,7 @@ struct MicrophoneWorkspaceView: View {
         if let first = snapshot.devices.first {
             return first.name
         }
-        return "Android 手机"
+        return snapshot.settings.transport == .wifi ? "Wi-Fi 手机" : "Android 手机"
     }
 
     private var effectiveAudio: AudioParameters {

@@ -264,7 +264,13 @@ private final class AudioDelivery: @unchecked Sendable {
     snapshot.selectedDeviceID=serial
    case .start(let module):
     log(module.rawValue,"userAction","source=\(source.rawValue), action=start, device=\(deviceAlias(snapshot.selectedDeviceID ?? "")), transport=\(snapshot.settings.transport.rawValue)")
-    if module == .microphone {wifiService?.pausedByUser=false}
+    if module == .microphone {
+     wifiService?.pausedByUser = false
+     if snapshot.settings.transport == .wifi {
+      startWifiMicrophone(source: source)
+      return
+     }
+    }
     if module == .microphone,owned[module]==nil,jobs[module]==nil {revokeMicrophoneIntent("newStart");microphoneIntent=UUID();microphoneIntentSerial=snapshot.selectedDeviceID;audioRetryCount=0}
     if module == .microphone,usbNetworkTransition {
      deferredNetworkResume=microphoneIntent
@@ -274,7 +280,15 @@ private final class AudioDelivery: @unchecked Sendable {
     start(module)
    case .stop(let module):
     log(module.rawValue,"userAction","source=\(source.rawValue), action=stop, session=\(owned[module]?.id ?? "none")")
-    if module == .microphone {pauseWifiAutoConnect();revokeMicrophoneIntent("userStop")}
+    if module == .microphone {
+     pauseWifiAutoConnect()
+     revokeMicrophoneIntent("userStop")
+     if owned[module] == nil {
+      status(.microphone, .stopped, "已停止拾音", "已暂停等待手机连接")
+      refreshWifiSnapshot()
+      return
+     }
+    }
     Task{await stop(module,source:source)}
    case .stopAll:
     log("system","userAction","source=\(source.rawValue), action=stopAll, owned=[\(owned.keys.map(\.rawValue).sorted().joined(separator:","))]")
@@ -750,20 +764,6 @@ private final class AudioDelivery: @unchecked Sendable {
     log("microphone", "wifiHostAmbiguous", "session=\(id), candidates=[\(resolvedTarget.candidates.map(\.name).joined(separator:","))], 检测到多个活动局域网地址，未自动同步至手机，等待用户明确选择")
     status(.microphone, .connecting, "存在多个局域网地址，请在设置中选择", "检测到多个活动局域网地址（\(candidateList)），无法判断手机所在网段；请在设置中选择「供手机连接的 Mac 地址」或在手机填写对应地址、端口 \(settings.audioPort)（\(codeHint)）")
     return
-   }
-   if !serial.isEmpty, resolvedTarget.host != nil {
-    do {
-     let devices = ADB.devices(try await adb.run(nil, ["devices"], timeout: 4))
-     adbServerWarm = true
-     if devices.contains(where: { $0.0 == serial && $0.1 == "device" }) {
-      try await prepareCompanion(.microphone, id, serial)
-      let args = try Self.wifiLaunchArguments(settings: settings, target: resolvedTarget)
-      _ = try await adb.run(serial, args, timeout: 4)
-      log("microphone", "wifiPhoneSynced", "session=\(id), device=\(deviceAlias(serial)), explicitHost=\(resolvedTarget.isUserSpecified), port=\(settings.audioPort), 已通过USB向手机同步Wi-Fi目标地址与端口并请求启动")
-     }
-    } catch {
-     log("microphone", "wifiPhoneSyncSkipped", "session=\(id), reason=\(error.localizedDescription)")
-    }
    }
    if let targetHost = resolvedTarget.host {
     status(.microphone, .connecting, "等待Wi-Fi发送端", "请在手机填写 Mac 地址（\(targetHost)）、端口 \(settings.audioPort)（\(codeHint)）后开启 Wi-Fi 麦克风")
@@ -1417,7 +1417,8 @@ private final class AudioDelivery: @unchecked Sendable {
    owned[module]=nil
    activeSessions[module]=nil
    if !recoveryBlocked {try saveJournal()}
-   status(module,.stopped,"已停止",warnings.joined(separator:"；"))
+   let stoppedMsg = (module == .microphone && source == .phone) ? "手机已停止录音" : "已停止"
+   status(module,.stopped,stoppedMsg,warnings.joined(separator:"；"))
    if module == .phoneInternet {resumeMicrophoneAfterNetwork()}
   } catch {
    owned[module]=session
@@ -1666,6 +1667,34 @@ extension SessionController: WifiSessionHost {
   refreshWifiSnapshot()
  }
 
+ fileprivate func startWifiMicrophone(source: ActionSource) {
+  guard !snapshot.isSavingSettings, !recovering, !recoveryBlocked, !quitting else { return }
+  wifiService?.pausedByUser = false
+  refreshWifiSnapshot()
+  if let error = wifiTrustError {
+   status(.microphone, .failed, "Wi-Fi 信任记录异常", error)
+   return
+  }
+  guard snapshot.settings.wifiAutoConnect else {
+   status(.microphone, .failed, "Wi-Fi 自动连接已关闭", "请在设置中开启「允许局域网自动连接」以使用 Wi-Fi 麦克风")
+   return
+  }
+  let trustedPhones = wifiTrust?.phones ?? []
+  guard !trustedPhones.isEmpty else {
+   status(.microphone, .waitingUser, "等待手机首次绑定", "未找到已绑定的手机；请在手机端打开 App 并在列表中选择这台 Mac 绑定")
+   return
+  }
+  if wifiService?.hasAuthenticatedConnection == true {
+   if wifiService?.requestStart() == true {
+    status(.microphone, .connecting, "正在请求手机开始拾音", "已向手机发送开始指令，等待手机启动拾音")
+   } else {
+    status(.microphone, .connecting, "正在准备 Wi-Fi 连接", "等待手机响应")
+   }
+  } else {
+   status(.microphone, .connecting, "等待已绑定手机连接", "已就绪；手机打开 App 连入同局域网后将自动开始拾音")
+  }
+ }
+
  fileprivate func pauseWifiAutoConnect() {
   wifiService?.pausedByUser=true
   log("wifi","paused","用户在 Mac 停止；本次打开期间不再自动开始拾音，点击开始或重新打开应用后恢复")
@@ -1693,6 +1722,9 @@ extension SessionController: WifiSessionHost {
      let streaming=wifiPhase(sessionID:id) == .streaming
      next.phase=streaming ? .streaming:.preparing
      next.message=streaming ? "已通过 Wi-Fi 接收手机音频":"手机已连接，正在等待音频"
+    } else if wifiService?.hasAuthenticatedConnection == true {
+     next.phase = .listening
+     next.message = "手机已连入，随时可开始拾音"
     } else {next.phase = .listening;next.message=next.trusted.isEmpty ? "等待手机首次绑定（在手机上选择这台 Mac）":"等待已绑定手机自动连接"}
    }
   }
@@ -1720,6 +1752,9 @@ extension SessionController: WifiSessionHost {
  public func wifiPrepare(_ request:WifiPrepareRequest) async -> WifiPrepareResult {
   guard !quitting,!shutdownDeadlineExpired else{return .rejected(code:"MAC_QUITTING")}
   guard !recovering,!recoveryBlocked,!snapshot.isSavingSettings else{return .rejected(code:"MAC_NOT_READY")}
+  if stopping.contains(.microphone), let stopJob = stopJobs[.microphone] {
+   await stopJob.value
+  }
   guard owned[.microphone]==nil,jobs[.microphone]==nil,autoGrant==nil,!stopping.contains(.microphone) else{
    log("wifi","prepareRejected","session=\(request.sessionID), reason=microphoneBusy")
    return .rejected(code:"MAC_BUSY")

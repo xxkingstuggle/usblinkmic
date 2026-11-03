@@ -97,9 +97,11 @@ public protocol WifiPeerConnection: AnyObject {
  public private(set) var pendingPrompt: WifiPairPrompt?
  private var pendingConnection: UUID?
 
- public var connectedPhoneName: String? { active?.phoneName }
+ public var connectedPhoneName: String? { active?.phoneName ?? connections.values.first(where: { $0.phase == .authenticated })?.phoneName }
  public var hasActiveSession: Bool { active != nil }
+ public var hasAuthenticatedConnection: Bool { connections.values.contains(where: { $0.phase == .authenticated }) }
  public func activePhoneID() -> String? { active?.phoneID }
+ public func authenticatedPhoneID() -> String? { active?.phoneID ?? connections.values.first(where: { $0.phase == .authenticated })?.phoneID }
  public func activeSessionID() -> String? { active?.id }
 
  public init(trust: WifiTrustStore, host: WifiSessionHost, macName: String, clock: @escaping () -> Date = Date.init) {
@@ -190,6 +192,15 @@ public protocol WifiPeerConnection: AnyObject {
   for conn in connections.values where conn.phoneID == phoneID { conn.handle.close() }
   if active?.phoneID == phoneID { await endActiveSession(reason: "forgotten") }
   host?.wifiServiceChanged()
+ }
+
+ /// Mac-side explicit start. Requests the connected phone to initiate an audio session via prepare.
+ @discardableResult
+ public func requestStart() -> Bool {
+  guard let conn = (active.flatMap { a in connections[a.connectionID] }) ?? connections.values.first(where: { $0.phase == .authenticated }) else { return false }
+  pausedByUser = false
+  push(conn, command: "event-start", ack: 0, fields: [:], macFields: "")
+  return true
  }
 
  /// Mac-side stop (user, quit or settings change). Notifies the phone on its control channel.
@@ -341,7 +352,8 @@ public protocol WifiPeerConnection: AnyObject {
   switch command {
   case "prepare":
    guard let rate = m["sampleRate"] as? Int, let channels = m["channels"] as? Int, let format = m["format"] as? String,
-         let source = m["source"] as? String, let initiated = m["userInitiated"] as? Bool else { return preError(conn, "BAD_REQUEST") }
+         let source = m["source"] as? String,
+         let initiated = (m["userInitiated"] as? Bool) ?? ((m["userInitiated"] as? Int).map { $0 != 0 }) else { return preError(conn, "BAD_REQUEST") }
    fields = "\(rate)|\(channels)|\(format)|\(source)|\(initiated ? 1 : 0)"
   case "status": fields = ""
   case "stop":
@@ -368,7 +380,7 @@ public protocol WifiPeerConnection: AnyObject {
         let format = (m["format"] as? String).flatMap(PCMFormat.init(rawValue:)),
         let source = (m["source"] as? String).flatMap(RecordingSource.init(rawValue:)) else { return reject("UNSUPPORTED_AUDIO") }
   audio.sampleRate = rate; audio.channels = channels; audio.format = format; audio.source = source
-  let userInitiated = m["userInitiated"] as? Bool ?? false
+  let userInitiated = (m["userInitiated"] as? Bool) ?? ((m["userInitiated"] as? Int).map { $0 != 0 }) ?? false
   if userInitiated { pausedByUser = false }
   guard !pausedByUser else { return reject("PAUSED_BY_USER") }
   if let current = active {
@@ -424,6 +436,7 @@ public protocol WifiPeerConnection: AnyObject {
    return push(conn, command: "error", ack: seq, fields: ["code": "STALE_SESSION"], macFields: "STALE_SESSION")
   }
   active = nil
+  pausedByUser = true
   await host?.wifiEnd(sessionID: session, reason: "phone-\(m["reason"] as? String ?? "stop")")
   host?.wifiServiceChanged()
   push(conn, command: "stopped", ack: seq, fields: ["session": session], macFields: session)
