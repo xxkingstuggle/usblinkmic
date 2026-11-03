@@ -3,7 +3,7 @@
 ## 1. 协议概述与定位
 Wi-Fi 自动连接协议专为局域网（同 Wi-Fi 或 Android 热点加入）下的 Mac 与 Android 设备提供零配置、免输入 IP/端口、无须 ADB/USB 的高保真麦克风拾音能力。
 协议核心设计目标：
-1. **免手动配对输入**：初次发现后只需单侧安全确认（手机端呈现 6 位验证码，Mac 端弹出授权提示并核对一致后同意）；之后永久互信绑定。
+1. **免手动配对输入**：初次发现后只需单侧安全确认（手机端呈现 6 位验证码，Mac 端弹出授权提示并核对一致后点击“允许并绑定”）；之后永久互信绑定。
 2. **断网与变网自愈**：支持 Wi-Fi 漫游、热点重连、IP 变化及单侧静默断开的重连（1s..15s 指数退避，无固定 5 次熔断上限）。
 3. **严格防伪造与防重放**：所有控制信令均基于预共享密钥 / 配对密钥计算 HMAC-SHA256 消息认证码（MAC），校验序列号（seq）与确认号（ack）。
 4. **单活跃所有权与代际隔离**：使用单调递增的代际计数器（generation）和单活跃会话机制，杜绝并发竞争、僵尸线程与晚到回调污染。
@@ -17,17 +17,17 @@ Wi-Fi 自动连接协议专为局域网（同 Wi-Fi 或 Android 热点加入）�
 - **服务类型**：`_usblinkmic._tcp.`
 - **传输层**：TCP 动态监听端口（控制通道）。
 - **注册域**：`local.`
-- **Mac 端广播**：Mac 启动 Wi-Fi 监听器后发布 Bonjour 服务，服务名称格式建议为 `USBLinkMic-<MacName>`。
-- **Android 端检索**：使用 `NsdManager`（或纯 NSD 客户端）持续发现 `_usblinkmic._tcp.`，支持热点模式及普通局域网。
+- **Mac 端广播**：Mac 启动 Wi-Fi 监听器后发布 Bonjour 服务，服务名称格式为 `USBLinkMic-<macID[:8]>`。
+- **Android 端检索**：使用 `NsdManager` 持续发现 `_usblinkmic._tcp.`，支持热点模式及普通局域网。
 
 ### 2.2 TXT 记录属性 (TXT Record Attributes)
 | 属性键 | 类型 | 说明 |
 | :--- | :--- | :--- |
 | `id` | String | Mac 设备唯一 ID（32 字符 Hex），持久化于 `wifi-trust.json`。 |
-| `name` | String | Mac 设备可读名称（例如 `MacBook Pro`）。 |
-| `proto` | String (Int) | 核心协议版本，当前固定为 `1`。 |
-| `wifi` | String (Int) | Wi-Fi 协议修订版本，当前固定为 `1`。 |
-| `runtime` | String (Int) | 运行时版本基线，如 `40017`。低于基线直接拒绝握手。 |
+| `name` | String | Mac 设备可读名称（截断至前 40 字符）。 |
+| `v` | String (Int) | 核心协议版本，当前固定为 `"4"`。 |
+| `w` | String (Int) | Wi-Fi 协议修订版本，当前固定为 `"1"`。 |
+| `rev` | String (Int) | 运行时版本基线，当前固定为 `"416"`。低于基线直接拒绝握手。 |
 
 ---
 
@@ -35,7 +35,7 @@ Wi-Fi 自动连接协议专为局域网（同 Wi-Fi 或 Android 热点加入）�
 
 - **传输层**：面向连接的 TCP 串行流。
 - **编码格式**：UTF-8 编码的单行 JSON，以换行符 `\n`（LF）作为报文定界符。
-- **单行最大长度**：Mac 限制单行最大 64KB（超长立即切断连接）。
+- **单行最大长度**：Mac 与 Android 限制单行最大 4096 字节（超长立即切断连接）。
 
 ---
 
@@ -47,9 +47,9 @@ Wi-Fi 自动连接协议专为局域网（同 Wi-Fi 或 Android 热点加入）�
 ```json
 {
   "cmd": "hello",
-  "protocol": 1,
+  "protocol": 4,
   "wifi": 1,
-  "runtimeRevision": 40017,
+  "runtimeRevision": 416,
   "phoneID": "79b48c...",
   "phoneName": "Pixel 7 Pro",
   "nonce": "a1b2c3d4e5f6...",
@@ -94,7 +94,7 @@ Wi-Fi 自动连接协议专为局域网（同 Wi-Fi 或 Android 热点加入）�
    ```
 3. 服务端生成自己的临时 ECDH 密钥对，派生共享密钥：
    `sharedSecret = ECDH(ServerPriv, ClientPub)`
-   `pairingKey = HMAC-SHA256(sharedSecret, "pair|" + macID + "|" + phoneID + "|" + clientNonce + "|" + serverNonce + "|" + phonePub + "|" + macPub)`
+   `pairingKey = HMAC-SHA256(sharedSecret, "usblinkmic-wifi-pair-v1|" + macID + "|" + phoneID + "|" + clientNonce + "|" + serverNonce + "|" + phonePub + "|" + macPub)`
 4. 服务端返回自己的公钥与 `requestID`：
    ```json
    {
@@ -109,7 +109,7 @@ Wi-Fi 自动连接协议专为局域网（同 Wi-Fi 或 Android 热点加入）�
   `digest = HMAC-SHA256(pairingKey, "sas")`
   `code = ((digest[0]<<24) | (digest[1]<<16) | (digest[2]<<8) | digest[3]) % 1000000`
 - 手机端界面展示验证码。
-- Mac 弹出授权弹窗，展示待配对设备名称与 6 位数字，用户点击“允许”进行授权。
+- Mac 弹出授权弹窗，展示待配对设备名称与 6 位数字，用户核对后点击“允许并绑定”进行授权。
 
 ### 5.3 配对状态轮询与证明
 客户端每隔 1s 发送：
@@ -119,7 +119,7 @@ Wi-Fi 自动连接协议专为局域网（同 Wi-Fi 或 Android 热点加入）�
   "requestID": "req-987654..."
 }
 ```
-Mac 用户点击“允许”后，服务端返回批准证明：
+Mac 用户点击“允许并绑定”后，服务端返回批准证明：
 ```json
 {
   "ok": true,
@@ -155,7 +155,7 @@ Mac 用户点击“允许”后，服务端返回批准证明：
   }
   ```
   - `serverProof = HMAC-SHA256(psk, "auth-s|" + macID + "|" + phoneID + "|" + clientNonce + "|" + serverNonce)`
-- **失败**：服务端返回 `ok: false, error: "AUTH_FAILED"` 并施加递增错误退避惩罚。
+- **失败**：服务端返回 `ok: false, error: "AUTH_FAILED"`。Mac 端维护 60 秒滑动窗口，若同一 `phoneID` 在 60 秒内累计认证失败达 5 次，后续连接立即被速率限制并返回 `{"ok": false, "error": "RATE_LIMITED"}`。
 
 ---
 
@@ -180,10 +180,22 @@ $$MAC = \text{HMAC-SHA256}(psk, \text{"msg|" + direction + "|" + clientNonce + "
 | `event-stop`| S $\to$ C | 服务端主动通知客户端会话已终止 | `session\|reason`（如 `macUser` / `audioFailed` / `macQuit`） |
 | `error` | 双向 | 业务拒绝或错误 | 错误码字符串（如 `PAUSED_BY_USER` / `UNAVAILABLE`） |
 
-### 7.2 音频会话令牌 (Audio Token)
-在 `prepared` 返回后，两端派生用于音频传输帧校验的音频令牌：
+### 7.2 音频会话令牌与传输格式 (Audio Transport)
+在 `prepared` 返回后，两端派生用于音频连接首行握手的音频令牌：
 $$\text{AudioToken} = \text{HMAC-SHA256}(psk, \text{"audio|" + sessionID + "|" + clientNonce + "|" + serverNonce})$$
-音频 UDP/TCP 数据帧必须携带该 Token，不合法的音频数据报文直接静默丢弃。
+音频传输使用独立 TCP 连接至 `audioPort`。连接建立后，客户端首行发送单行 JSON 握手报文：
+```json
+{
+  "protocol": 4,
+  "session": "<sessionID>",
+  "token": "<audioToken>",
+  "sampleRate": 44100,
+  "channels": 1,
+  "format": "i16",
+  "source": "microphone"
+}
+```
+握手成功后，后续音频数据以“长度前缀原始 PCM 帧”（4 字节大端整数长度 + 原始 PCM 载荷）连续串流传输，帧内部不附加逐帧 token、MAC 或加密开销；服务端一旦读取到非法长度或断开即切断会话。
 
 ---
 
@@ -201,6 +213,7 @@ $$\text{AudioToken} = \text{HMAC-SHA256}(psk, \text{"audio|" + sessionID + "|" +
 ### 8.2 超时与保活预算
 - **建连/前认证超时**：8 秒未收到合法响应，断开连接重置。
 - **控制通道心跳周期**：客户端每 5 秒发送一次 signed `status`。
+- **响应超时预算 (Deadline Budget)**：客户端在发出心跳后，如果在预定时间内（默认 10 秒）未收到任何来自服务端的合法已签名响应（如 `state` / `stopped` 等），判定连接进入黑洞状态，主动断开并触发自愈重连。
 - **服务端空闲断开**：控制通道连续 20 秒无有效数据活动，强制切断。
 - **音频孤儿会话宽限期 (Orphan Grace)**：若控制通道异常中断，Mac 音频监听器保持 15 秒宽限期以容忍快速重连。超过 15 秒仍无重连则释放音频资源。
 

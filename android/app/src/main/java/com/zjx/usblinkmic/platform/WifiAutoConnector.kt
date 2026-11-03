@@ -14,6 +14,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -27,15 +28,52 @@ interface WifiEndpointDiscovery {
     fun stop()
 }
 
+object NsdHostSelector {
+    fun selectBestIpv4Host(serviceInfo: NsdServiceInfo): String? {
+        val hostList: List<java.net.InetAddress>? = if (Build.VERSION.SDK_INT >= 34) {
+            try {
+                val getHostAddresses = serviceInfo.javaClass.getMethod("getHostAddresses")
+                @Suppress("UNCHECKED_CAST")
+                getHostAddresses.invoke(serviceInfo) as? List<java.net.InetAddress>
+            } catch (_: Throwable) {
+                null
+            }
+        } else null
+        return selectBestIpv4(serviceInfo.host, hostList)
+    }
+
+    fun selectBestIpv4(primaryHost: java.net.InetAddress?, allAddresses: List<java.net.InetAddress>? = null): String? {
+        if (!allAddresses.isNullOrEmpty()) {
+            val ipv4 = allAddresses.filterIsInstance<Inet4Address>().firstOrNull()?.hostAddress
+            if (!ipv4.isNullOrBlank()) return ipv4
+        }
+        if (primaryHost is Inet4Address) {
+            return primaryHost.hostAddress
+        }
+        if (primaryHost != null) {
+            val addr = primaryHost.hostAddress ?: return null
+            val clean = addr.split('%')[0].trim()
+            if (clean.contains('.') && !clean.contains(':')) return clean
+            return clean
+        }
+        return null
+    }
+}
+
 class AndroidNsdDiscovery(private val context: Context) : WifiEndpointDiscovery {
     private var nsdManager: NsdManager? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private val serviceNameToMacId = ConcurrentHashMap<String, String>()
+    private val activeFoundServices = ConcurrentHashMap.newKeySet<String>()
+    private val discoveryGeneration = AtomicLong(0)
 
     override fun start(onDiscovered: (DiscoveredMac) -> Unit, onLost: (String) -> Unit) {
         stop()
         val manager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
         nsdManager = manager
+        val myGen = discoveryGeneration.incrementAndGet()
+        activeFoundServices.clear()
+        serviceNameToMacId.clear()
 
         discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(regType: String) {}
@@ -53,24 +91,33 @@ class AndroidNsdDiscovery(private val context: Context) : WifiEndpointDiscovery 
                 val serviceType = service.serviceType?.trimEnd('.').orEmpty()
                 val targetType = Capabilities.BONJOUR_SERVICE_TYPE.trimEnd('.')
                 if (serviceType.contains("usblinkmic") || serviceType == targetType) {
+                    val sName = service.serviceName.orEmpty()
+                    if (sName.isNotEmpty()) {
+                        activeFoundServices.add(sName)
+                    }
                     try {
                         manager.resolveService(service, object : NsdManager.ResolveListener {
                             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                                 Runtime.log("wifi", "nsdResolveFailed", "service=${serviceInfo.serviceName} errorCode=$errorCode")
                             }
                             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                                val host = serviceInfo.host?.hostAddress ?: return
+                                if (myGen != discoveryGeneration.get()) return
+                                val resolvedName = serviceInfo.serviceName.orEmpty()
+                                if (resolvedName.isNotEmpty() && !activeFoundServices.contains(resolvedName)) {
+                                    Runtime.log("wifi", "nsdResolveDropped", "service=$resolvedName was already lost")
+                                    return
+                                }
+                                val host = NsdHostSelector.selectBestIpv4Host(serviceInfo) ?: return
                                 val port = serviceInfo.port
                                 if (port <= 0 || host.isBlank()) return
                                 val attributes = serviceInfo.attributes ?: emptyMap()
                                 val id = attributes["id"]?.let { String(it, Charsets.UTF_8) }.orEmpty()
                                 val name = attributes["name"]?.let { String(it, Charsets.UTF_8) }.orEmpty().ifBlank { serviceInfo.serviceName ?: "Mac" }
-                                val sName = serviceInfo.serviceName ?: ""
                                 if (id.isNotEmpty()) {
-                                    if (sName.isNotEmpty()) {
-                                        serviceNameToMacId[sName] = id
+                                    if (resolvedName.isNotEmpty()) {
+                                        serviceNameToMacId[resolvedName] = id
                                     }
-                                    onDiscovered(DiscoveredMac(id = id, name = name, host = host, controlPort = port, isTrusted = false, serviceName = sName))
+                                    onDiscovered(DiscoveredMac(id = id, name = name, host = host, controlPort = port, isTrusted = false, serviceName = resolvedName))
                                 }
                             }
                         })
@@ -82,6 +129,7 @@ class AndroidNsdDiscovery(private val context: Context) : WifiEndpointDiscovery 
 
             override fun onServiceLost(service: NsdServiceInfo) {
                 val sName = service.serviceName ?: return
+                activeFoundServices.remove(sName)
                 val macId = serviceNameToMacId.remove(sName) ?: sName
                 onLost(macId)
             }
@@ -95,6 +143,8 @@ class AndroidNsdDiscovery(private val context: Context) : WifiEndpointDiscovery 
     }
 
     override fun stop() {
+        discoveryGeneration.incrementAndGet()
+        activeFoundServices.clear()
         val listener = discoveryListener
         discoveryListener = null
         if (listener != null) {
@@ -127,23 +177,25 @@ class WifiAutoConnector(
         }
     }
 
-    private fun postDelayedOnMain(delayMs: Long, action: () -> Unit) {
+    private fun postDelayed(delayMs: Long, action: () -> Unit) {
         when {
             delayedDispatcher != null -> delayedDispatcher.invoke(delayMs, action)
             mainHandler != null -> mainHandler.postDelayed(action, delayMs)
-            else -> thread(isDaemon = true) {
-                try { Thread.sleep(delayMs) } catch (_: InterruptedException) { return@thread }
-                action()
+            else -> {
+                thread(isDaemon = true) {
+                    try { Thread.sleep(delayMs) } catch (_: InterruptedException) { return@thread }
+                    postOnMain(action)
+                }
             }
         }
     }
 
-    private val discoveredMap = ConcurrentHashMap<String, DiscoveredMac>()
+    val discoveredMap = ConcurrentHashMap<String, DiscoveredMac>()
     val running = AtomicBoolean(false)
     @Volatile var isUiVisible = false
     @Volatile var pausedByUser = false
 
-    private class ActiveSession(
+    data class ActiveSession(
         val generation: Long,
         val target: DiscoveredMac,
         val sessionID: String,
@@ -153,27 +205,44 @@ class WifiAutoConnector(
         val socket: Socket,
         val reader: BufferedReader,
         val writer: OutputStreamWriter,
-        var nextClientSeq: Int = 2,
-        var expectedServerSeq: Int = 1,
+        @Volatile var nextClientSeq: Int = 2,
+        @Volatile var expectedServerSeq: Int = 2,
+        @Volatile var lastSentStatusSeq: Int = -1,
+        @Volatile var lastValidResponseTimeMs: Long = 0L,
         @Volatile var isStreaming: Boolean = false,
         @Volatile var closed: Boolean = false
     )
 
     private val sessionGeneration = AtomicLong(0)
+    private val sessionLock = Any()
     @Volatile private var currentSession: ActiveSession? = null
+    private val connectingAttempt = AtomicLong(0L)
     @Volatile private var pairingThread: Thread? = null
     private val pairingGeneration = AtomicLong(0)
 
     private val reconnectBackoffMs = AtomicLong(1000L)
     private val maxBackoffMs = 15000L
-    private val isConnecting = AtomicBoolean(false)
+
     var heartbeatIntervalMs: Long = 5000L
+    var responseTimeoutBudgetMs: Long = 20000L
+    var monotonicClock: () -> Long = {
+        try {
+            android.os.SystemClock.elapsedRealtime()
+        } catch (_: Throwable) {
+            System.nanoTime() / 1_000_000L
+        }
+    }
 
     val phoneDisplayName: String
         get() = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
 
     val activeSessionID: String?
-        get() = currentSession?.sessionID
+        get() = synchronized(sessionLock) { currentSession?.sessionID }
+
+    val isSessionAlive: Boolean
+        get() = synchronized(sessionLock) {
+            currentSession?.let { !it.closed && it.socket.isConnected && !it.socket.isClosed } == true
+        }
 
     fun onUiStart() {
         isUiVisible = true
@@ -188,8 +257,11 @@ class WifiAutoConnector(
                     refreshSnapshot()
                     if (previous == null || previous.host != mac.host || previous.controlPort != mac.controlPort) {
                         checkAutoConnect()
-                    } else if (currentSession == null) {
-                        checkAutoConnect()
+                    } else {
+                        val hasActive = synchronized(sessionLock) { currentSession != null }
+                        if (!hasActive) {
+                            checkAutoConnect()
+                        }
                     }
                 }
             },
@@ -220,9 +292,9 @@ class WifiAutoConnector(
         sessionGeneration.incrementAndGet()
         discovery.stop()
         cancelPairing()
-        closeCurrentSession("stoppedByUser")
+        closeCurrentSessionExplicitly("stoppedByUser")
         discoveredMap.clear()
-        refreshSnapshot()
+        postOnMain { refreshSnapshot() }
     }
 
     fun onUserStartedExplicitly() {
@@ -234,28 +306,41 @@ class WifiAutoConnector(
 
     fun onUserStoppedExplicitly() {
         pausedByUser = true
-        val session = currentSession
-        if (session != null) {
+        var sessionToStop: ActiveSession? = null
+        synchronized(sessionLock) {
+            sessionToStop = currentSession
+            currentSession = null
+        }
+        if (sessionToStop != null) {
             thread(name = "linkmic-stop", isDaemon = true) {
-                sendAuthenticatedStop(session, reason = "userStopped")
+                sendAuthenticatedStop(sessionToStop!!, reason = "userStopped")
                 sessionGeneration.incrementAndGet()
-                closeCurrentSession("userStoppedExplicitly")
+                sessionToStop!!.closed = true
+                try { sessionToStop!!.socket.close() } catch (_: Throwable) {}
+                val req = Runtime.audioRequest
+                if (req != null && req.session == sessionToStop!!.sessionID) {
+                    req.cancelled = true
+                    MicrophoneService.stopCapture(req)
+                }
             }
         } else {
             sessionGeneration.incrementAndGet()
         }
-        refreshSnapshot()
+        postOnMain { refreshSnapshot() }
     }
 
     fun onMicrophoneServiceStopped(session: String?, error: String = "") {
-        val active = currentSession
-        if (active != null && (session == null || active.sessionID == session)) {
+        var active: ActiveSession? = null
+        synchronized(sessionLock) {
+            val curr = currentSession
+            if (curr != null && (session == null || curr.sessionID == session)) {
+                active = curr
+            }
+        }
+        if (active != null) {
             thread(name = "linkmic-srv-stop", isDaemon = true) {
-                sendAuthenticatedStop(active, reason = if (error.isNotBlank()) "audioError" else "phoneStop")
-                closeCurrentSession("serviceStopped: $error")
-                if (!pausedByUser && running.get() && error.isNotBlank()) {
-                    scheduleReconnect()
-                }
+                sendAuthenticatedStop(active!!, reason = if (error.isNotBlank()) "audioError" else "phoneStop")
+                closeSessionIfOwner(active!!, "serviceStopped: $error", allowReconnect = error.isNotBlank())
             }
         }
     }
@@ -266,10 +351,16 @@ class WifiAutoConnector(
         if (existing != null) {
             discoveredMap[macId] = existing.copy(isTrusted = false)
         }
-        val active = currentSession
-        if (active != null && active.target.id == macId) {
+        var activeToClose: ActiveSession? = null
+        synchronized(sessionLock) {
+            if (currentSession?.target?.id == macId) {
+                activeToClose = currentSession
+                currentSession = null
+            }
+        }
+        if (activeToClose != null) {
             sessionGeneration.incrementAndGet()
-            closeCurrentSession("macForgotten")
+            closeSessionIfOwner(activeToClose!!, "macForgotten", allowReconnect = false)
         }
         refreshSnapshot()
     }
@@ -301,7 +392,9 @@ class WifiAutoConnector(
     fun checkAutoConnect(userInitiated: Boolean = false) {
         if (!running.get()) return
         if (pausedByUser && !userInitiated) return
-        if (currentSession != null && !currentSession!!.closed) return
+        synchronized(sessionLock) {
+            if (currentSession != null && !currentSession!!.closed) return
+        }
         if (Runtime.audioRequest != null && Runtime.audioRequest?.cancelled == false) return
         val currentSettings = Runtime.state.value.settings
         if (!currentSettings.wifiAutoConnect) return
@@ -315,18 +408,24 @@ class WifiAutoConnector(
         // Background safety: do not start microphone if UI is backgrounded unless user explicitly initiated
         if (!isUiVisible && !userInitiated) return
 
-        if (!userInitiated && !isConnecting.compareAndSet(false, true)) {
+        if (!userInitiated && connectingAttempt.get() != 0L) {
             return
-        } else if (userInitiated) {
-            isConnecting.set(true)
         }
 
         val myGen = sessionGeneration.incrementAndGet()
+        if (!userInitiated) {
+            if (!connectingAttempt.compareAndSet(0L, myGen)) {
+                return
+            }
+        } else {
+            connectingAttempt.set(myGen)
+        }
+
         thread(name = "linkmic-connect-$myGen", isDaemon = true) {
             try {
                 connectAndPrepare(myGen, target, trusted, userInitiated)
             } finally {
-                isConnecting.set(false)
+                connectingAttempt.compareAndSet(myGen, 0L)
             }
         }
     }
@@ -458,11 +557,6 @@ class WifiAutoConnector(
 
             val audioToken = WifiCrypto.audioToken(key, sessionID, clientNonce, serverNonce)
 
-            if (myGen != sessionGeneration.get() || !running.get() || pausedByUser) {
-                try { s.close() } catch (_: Exception) {}
-                return
-            }
-
             val active = ActiveSession(
                 generation = myGen,
                 target = target,
@@ -475,13 +569,34 @@ class WifiAutoConnector(
                 writer = writer,
                 nextClientSeq = 2,
                 expectedServerSeq = 2,
-                isStreaming = false
+                lastSentStatusSeq = -1,
+                lastValidResponseTimeMs = monotonicClock(),
+                isStreaming = false,
+                closed = false
             )
-            currentSession = active
-            reconnectBackoffMs.set(1000L)
+
+            var installed = false
+            synchronized(sessionLock) {
+                if (myGen == sessionGeneration.get() && running.get() && !pausedByUser) {
+                    val prev = currentSession
+                    currentSession = active
+                    if (prev != null && prev !== active) {
+                        prev.closed = true
+                        try { prev.socket.close() } catch (_: Throwable) {}
+                    }
+                    reconnectBackoffMs.set(1000L)
+                    installed = true
+                }
+            }
+
+            if (!installed) {
+                active.closed = true
+                try { s.close() } catch (_: Exception) {}
+                return
+            }
 
             postOnMain {
-                if (myGen == sessionGeneration.get() && running.get() && !pausedByUser) {
+                if (myGen == sessionGeneration.get() && currentSession === active && running.get() && !pausedByUser) {
                     Runtime.update {
                         it.copy(
                             wifiAuto = it.wifiAuto.copy(
@@ -504,7 +619,7 @@ class WifiAutoConnector(
                 try { socket.close() } catch (_: Exception) {}
             }
             if (myGen == sessionGeneration.get()) {
-                closeCurrentSession("connectFailed: ${e.message}")
+                closeCurrentSessionExplicitly("connectFailed: ${e.message}")
                 postOnMain {
                     refreshSnapshot()
                     if (!pausedByUser && running.get()) {
@@ -516,6 +631,8 @@ class WifiAutoConnector(
     }
 
     private fun runSessionLoop(session: ActiveSession) {
+        session.socket.soTimeout = minOf(heartbeatIntervalMs.toInt(), 2000).coerceAtLeast(100)
+
         // Start keepalive heartbeat sender
         val heartbeatThread = thread(name = "linkmic-heartbeat-${session.generation}", isDaemon = true) {
             while (!session.closed && session.generation == sessionGeneration.get()) {
@@ -528,6 +645,7 @@ class WifiAutoConnector(
                 try {
                     synchronized(session.writer) {
                         val seq = session.nextClientSeq++
+                        session.lastSentStatusSeq = seq
                         val mac = WifiCrypto.messageMAC(session.key, direction = "c", clientNonce = session.clientNonce, serverNonce = session.serverNonce, sequence = seq, command = "status", fields = "")
                         val req = JSONObject().put("cmd", "status").put("seq", seq).put("mac", mac)
                         session.writer.write(req.toString() + "\n")
@@ -535,7 +653,7 @@ class WifiAutoConnector(
                     }
                 } catch (e: Exception) {
                     Runtime.log("wifi", "heartbeatFailed", e.message ?: e.javaClass.simpleName)
-                    closeCurrentSession("heartbeatFailed")
+                    closeSessionIfOwner(session, "heartbeatFailed", allowReconnect = true)
                     break
                 }
             }
@@ -543,11 +661,19 @@ class WifiAutoConnector(
 
         try {
             while (!session.closed && session.generation == sessionGeneration.get()) {
+                if (monotonicClock() - session.lastValidResponseTimeMs > responseTimeoutBudgetMs) {
+                    Runtime.log("wifi", "responseTimeout", "Response timeout expired: >${responseTimeoutBudgetMs}ms")
+                    break
+                }
+
                 val line: String?
                 try {
                     line = session.reader.readLine()
                 } catch (e: SocketTimeoutException) {
-                    // Socket read timeout: normal when idle, continue reading
+                    if (monotonicClock() - session.lastValidResponseTimeMs > responseTimeoutBudgetMs) {
+                        Runtime.log("wifi", "responseTimeout", "Response timeout expired: >${responseTimeoutBudgetMs}ms")
+                        break
+                    }
                     continue
                 }
 
@@ -566,7 +692,6 @@ class WifiAutoConnector(
                     Runtime.log("wifi", "badSequence", "expected=${session.expectedServerSeq} got=$seq")
                     break
                 }
-                session.expectedServerSeq++
 
                 when (cmd) {
                     "state" -> {
@@ -578,6 +703,16 @@ class WifiAutoConnector(
                             Runtime.log("wifi", "invalidMac", "cmd=state")
                             break
                         }
+                        if (stateSession != session.sessionID) {
+                            Runtime.log("wifi", "wrongSession", "cmd=state expected=${session.sessionID} got=$stateSession")
+                            break
+                        }
+                        if (ack != session.lastSentStatusSeq && ack != 1) {
+                            Runtime.log("wifi", "badAck", "cmd=state expected=${session.lastSentStatusSeq} got=$ack")
+                            break
+                        }
+                        session.lastValidResponseTimeMs = monotonicClock()
+                        session.expectedServerSeq++
                         if (state == "streaming") {
                             session.isStreaming = true
                             postOnMain { refreshSnapshot() }
@@ -595,18 +730,21 @@ class WifiAutoConnector(
                             Runtime.log("wifi", "invalidMac", "cmd=event-stop")
                             break
                         }
-                        if (stopSession == session.sessionID) {
-                            if (reason == "macUser" || reason == "macStopped") {
-                                pausedByUser = true
-                            }
-                            Runtime.log("wifi", "serverEventStop", "reason=$reason")
-                            val currentReq = Runtime.audioRequest
-                            if (currentReq != null && currentReq.session == session.sessionID) {
-                                currentReq.cancelled = true
-                                MicrophoneService.stopCapture(currentReq)
-                            }
+                        if (stopSession != session.sessionID) {
+                            Runtime.log("wifi", "wrongSession", "cmd=event-stop")
                             break
                         }
+                        if (ack != 0) {
+                            Runtime.log("wifi", "badAck", "cmd=event-stop ack=$ack")
+                            break
+                        }
+                        session.lastValidResponseTimeMs = monotonicClock()
+                        session.expectedServerSeq++
+                        if (reason == "macUser" || reason == "macStopped") {
+                            pausedByUser = true
+                        }
+                        Runtime.log("wifi", "serverEventStop", "reason=$reason")
+                        break
                     }
                     "stopped" -> {
                         val stoppedSession = msg.optString("session")
@@ -615,6 +753,12 @@ class WifiAutoConnector(
                             Runtime.log("wifi", "invalidMac", "cmd=stopped")
                             break
                         }
+                        if (stoppedSession != session.sessionID) {
+                            Runtime.log("wifi", "wrongSession", "cmd=stopped")
+                            break
+                        }
+                        session.lastValidResponseTimeMs = monotonicClock()
+                        session.expectedServerSeq++
                         break
                     }
                     "error" -> {
@@ -624,9 +768,14 @@ class WifiAutoConnector(
                             Runtime.log("wifi", "invalidMac", "cmd=error")
                             break
                         }
+                        session.expectedServerSeq++
                         if (code == "PAUSED_BY_USER") {
                             pausedByUser = true
                         }
+                        break
+                    }
+                    else -> {
+                        Runtime.log("wifi", "unrecognizedCommand", cmd)
                         break
                     }
                 }
@@ -635,18 +784,7 @@ class WifiAutoConnector(
             Runtime.log("wifi", "sessionLoopError", e.message ?: e.javaClass.simpleName)
         } finally {
             heartbeatThread.interrupt()
-            val currentReq = Runtime.audioRequest
-            if (currentReq != null && currentReq.session == session.sessionID) {
-                currentReq.cancelled = true
-                MicrophoneService.stopCapture(currentReq)
-            }
-            closeCurrentSession("loopEnded")
-            postOnMain {
-                refreshSnapshot()
-                if (!pausedByUser && running.get()) {
-                    scheduleReconnect()
-                }
-            }
+            closeSessionIfOwner(session, "loopEnded", allowReconnect = true)
         }
     }
 
@@ -663,54 +801,84 @@ class WifiAutoConnector(
         } catch (_: Exception) {}
     }
 
-    private fun closeCurrentSession(reason: String = "") {
-        val session = currentSession
-        currentSession = null
-        if (session != null) {
-            session.closed = true
-            try { session.socket.close() } catch (_: Exception) {}
+    private fun closeSessionIfOwner(session: ActiveSession, reason: String, allowReconnect: Boolean = true): Boolean {
+        session.closed = true
+        try { session.socket.close() } catch (_: Throwable) {}
+
+        var wasOwner = false
+        synchronized(sessionLock) {
+            if (currentSession === session) {
+                currentSession = null
+                wasOwner = true
+            }
         }
+
+        if (wasOwner) {
+            val req = Runtime.audioRequest
+            if (req != null && req.session == session.sessionID) {
+                req.cancelled = true
+                MicrophoneService.stopCapture(req)
+            }
+            postOnMain {
+                refreshSnapshot()
+                if (allowReconnect && !pausedByUser && running.get()) {
+                    scheduleReconnect()
+                }
+            }
+        }
+        return wasOwner
+    }
+
+    private fun closeCurrentSessionExplicitly(reason: String) {
+        var toClose: ActiveSession? = null
+        synchronized(sessionLock) {
+            toClose = currentSession
+            currentSession = null
+        }
+        if (toClose != null) {
+            toClose!!.closed = true
+            try { toClose!!.socket.close() } catch (_: Throwable) {}
+            val req = Runtime.audioRequest
+            if (req != null && req.session == toClose!!.sessionID) {
+                req.cancelled = true
+                MicrophoneService.stopCapture(req)
+            }
+        }
+        postOnMain { refreshSnapshot() }
     }
 
     private fun scheduleReconnect() {
-        if (pausedByUser || !running.get()) return
-        val delayMs = reconnectBackoffMs.get()
-        reconnectBackoffMs.set((delayMs * 2).coerceAtMost(maxBackoffMs))
-        postDelayedOnMain(delayMs) {
-            if (!pausedByUser && running.get()) {
-                checkAutoConnect(userInitiated = false)
-            }
+        val delay = reconnectBackoffMs.get()
+        val next = (delay * 2).coerceAtMost(maxBackoffMs)
+        reconnectBackoffMs.set(next)
+        Runtime.log("wifi", "scheduleReconnect", "in ${delay}ms")
+        postDelayed(delay) {
+            checkAutoConnect(userInitiated = false)
         }
     }
 
     private fun runPairing(gen: Long, target: DiscoveredMac) {
-        if (gen != pairingGeneration.get()) return
+        if (gen != pairingGeneration.get() || !running.get()) return
         var socket: Socket? = null
         try {
             postOnMain {
-                if (gen == pairingGeneration.get()) {
-                    Runtime.update {
-                        it.copy(
-                            wifiAuto = it.wifiAuto.copy(
-                                phase = WifiAutoPhase.PAIRING,
-                                message = "正在连接 ${target.name} 申请绑定…"
-                            )
+                Runtime.update {
+                    it.copy(
+                        wifiAuto = it.wifiAuto.copy(
+                            phase = WifiAutoPhase.PAIRING,
+                            message = "正在连接 ${target.name} 进行配对…",
+                            pendingPairCode = null,
+                            pendingPairMacName = target.name
                         )
-                    }
+                    )
                 }
             }
+
             val s = socketFactory?.invoke(target.host, target.controlPort) ?: Socket()
             socket = s
             s.tcpNoDelay = true
             s.soTimeout = 10000
-            if (!s.isConnected) {
-                s.connect(InetSocketAddress(target.host, target.controlPort), 5000)
-            }
-
-            if (gen != pairingGeneration.get()) {
-                try { s.close() } catch (_: Exception) {}
-                return
-            }
+            s.connect(InetSocketAddress(target.host, target.controlPort), 5000)
 
             val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
             val writer = OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8)
@@ -734,7 +902,10 @@ class WifiAutoConnector(
             val helloResp = JSONObject(helloRespLine)
             if (!helloResp.optBoolean("ok")) throw IllegalStateException(helloResp.optString("error", "HELLO_REJECTED"))
             val serverNonce = helloResp.getString("nonce")
+            val serverMacID = helloResp.getString("macID")
+            if (serverMacID != target.id) throw IllegalStateException("MAC_ID_MISMATCH")
 
+            // Generate ECDH P-256 ephemeral keys
             val phoneKeys = WifiCrypto.PairingKeys()
             val pairReq = JSONObject().put("cmd", "pair").put("pub", phoneKeys.publicBase64)
             synchronized(writer) {
@@ -745,9 +916,9 @@ class WifiAutoConnector(
             val pairRespLine = reader.readLine() ?: throw IllegalStateException("CLOSED_EARLY")
             val pairResp = JSONObject(pairRespLine)
             if (!pairResp.optBoolean("ok")) throw IllegalStateException(pairResp.optString("error", "PAIR_REJECTED"))
-
             val macPub = pairResp.getString("macPub")
             val requestID = pairResp.getString("requestID")
+
             val pairingKey = WifiCrypto.pairingKey(
                 privateKey = phoneKeys.keyPair.private,
                 peerPublicBase64 = macPub,
@@ -757,7 +928,7 @@ class WifiAutoConnector(
                 serverNonce = serverNonce,
                 phonePublicBase64 = phoneKeys.publicBase64,
                 macPublicBase64 = macPub
-            ) ?: throw IllegalStateException("ECDH_FAILED")
+            ) ?: throw IllegalStateException("KEY_AGREEMENT_FAILED")
 
             val verificationCode = WifiCrypto.verificationCode(pairingKey)
             postOnMain {
@@ -766,7 +937,7 @@ class WifiAutoConnector(
                         it.copy(
                             wifiAuto = it.wifiAuto.copy(
                                 phase = WifiAutoPhase.PAIRING,
-                                message = "等待在 Mac 上确认",
+                                message = "请在 Mac 上核对验证码并确认配对",
                                 pendingPairCode = verificationCode,
                                 pendingPairMacName = target.name
                             )
@@ -775,28 +946,29 @@ class WifiAutoConnector(
                 }
             }
 
-            // Poll pairStatus
+            // Poll for approval (10 attempts, 1s interval)
             var approved = false
-            for (i in 0 until 120) {
+            for (i in 0 until 30) {
+                if (gen != pairingGeneration.get() || !running.get()) break
                 Thread.sleep(1000)
-                if (Thread.interrupted() || gen != pairingGeneration.get()) throw InterruptedException()
-                val statusReq = JSONObject().put("cmd", "pairStatus")
+                if (gen != pairingGeneration.get() || !running.get()) break
+
+                val pollReq = JSONObject().put("cmd", "pairStatus").put("requestID", requestID)
                 synchronized(writer) {
-                    writer.write(statusReq.toString() + "\n")
+                    writer.write(pollReq.toString() + "\n")
                     writer.flush()
                 }
 
-                val statusLine = reader.readLine() ?: break
-                val statusResp = JSONObject(statusLine)
-                val status = statusResp.optString("status")
-                if (status == "approved") {
-                    val proof = statusResp.optString("proof")
+                val pollRespLine = reader.readLine() ?: break
+                val pollResp = JSONObject(pollRespLine)
+                if (pollResp.optBoolean("ok") && pollResp.optString("status") == "approved") {
+                    val proof = pollResp.optString("proof")
                     val expectedProof = WifiCrypto.pairApprovedProof(pairingKey, requestID, target.id, trustStore.phoneId)
                     if (WifiCrypto.equal(proof, expectedProof)) {
                         approved = true
                         break
                     }
-                } else if (status == "rejected" || status == "expired") {
+                } else if (pollResp.optString("status") == "rejected") {
                     break
                 }
             }
@@ -805,12 +977,7 @@ class WifiAutoConnector(
 
             if (gen == pairingGeneration.get()) {
                 if (approved) {
-                    val trusted = TrustedMac(
-                        id = target.id,
-                        name = target.name,
-                        keyHex = WifiCrypto.hex(pairingKey),
-                        pairedAt = System.currentTimeMillis()
-                    )
+                    val trusted = TrustedMac(id = target.id, name = target.name, keyHex = WifiCrypto.hex(pairingKey), pairedAt = System.currentTimeMillis())
                     trustStore.upsert(trusted)
                     discoveredMap[target.id] = target.copy(isTrusted = true)
                     postOnMain {
@@ -870,7 +1037,7 @@ class WifiAutoConnector(
             TrustedMacInfo(id = it.id, name = it.name, pairedAt = it.pairedAt)
         }
         val isEnabled = Runtime.state.value.settings.wifiAutoConnect
-        val session = currentSession
+        val session = synchronized(sessionLock) { currentSession }
         val isRecordingNow = Runtime.audioRequest?.let { MicrophoneService.isRecording(it) } == true
         val phase = when {
             !isEnabled -> WifiAutoPhase.OFF
