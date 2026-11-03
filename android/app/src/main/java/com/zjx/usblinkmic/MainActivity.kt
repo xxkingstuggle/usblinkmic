@@ -172,8 +172,19 @@ class MainActivity : ComponentActivity() {
    UserAction.StartWifi -> {
     if(pending!=null){Runtime.log("wifi","systemPermissionBusy","请先完成当前系统权限处理",source="phoneUI",errorCode="SYSTEM_PERMISSION_BUSY");return}
     val settings=Runtime.state.value.settings
-    if (settings.wifiAutoConnect && trustStore.loadTrustedMacs().isNotEmpty()) {
-     wifiAutoConnector.onUserStartedExplicitly()
+    if (settings.wifiAutoConnect) {
+     if (trustStore.loadTrustedMacs().isNotEmpty()) {
+      wifiAutoConnector.onUserStartedExplicitly()
+     } else {
+      Runtime.update {
+       it.copy(
+        wifiAuto = it.wifiAuto.copy(
+         phase = WifiAutoPhase.SEARCHING,
+         message = "尚未绑定 Mac，请在下方已发现设备中点击配对"
+        )
+       )
+      }
+     }
      return
     }
     Runtime.audioRequest?.let { Runtime.stop(this, it, source = "phoneUI") }

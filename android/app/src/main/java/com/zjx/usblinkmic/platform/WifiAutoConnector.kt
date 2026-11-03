@@ -18,6 +18,7 @@ import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -212,7 +213,9 @@ class WifiAutoConnector(
         @Volatile var isStreaming: Boolean = false,
         @Volatile var closed: Boolean = false,
         @Volatile var pendingPrepareSeq: Int = -1,
-        @Volatile var audioEpoch: Long = 0L
+        @Volatile var audioEpoch: Long = 0L,
+        val cancelledPrepareSeqs: MutableSet<Int> = Collections.newSetFromMap(ConcurrentHashMap<Int, Boolean>()),
+        val pendingStops: ConcurrentHashMap<Int, String> = ConcurrentHashMap<Int, String>()
     )
 
     private val sessionGeneration = AtomicLong(0)
@@ -299,10 +302,11 @@ class WifiAutoConnector(
         postOnMain { refreshSnapshot() }
     }
 
-    fun stopAudioService(expectedSessionID: String? = null, reason: String = "stop") {
+    fun stopAudioService(expectedSessionID: String, reason: String = "stop") {
+        if (expectedSessionID.isBlank()) return
         val req = Runtime.audioRequest ?: return
         if (req.mode != "wifi") return
-        if (expectedSessionID != null && expectedSessionID.isNotBlank() && req.session != expectedSessionID) return
+        if (req.session != expectedSessionID) return
         req.cancelled = true
         if (context != null) {
             Runtime.stop(context, req, source = reason)
@@ -330,7 +334,10 @@ class WifiAutoConnector(
             active = currentSession
             if (active != null && !active!!.closed) {
                 active!!.audioEpoch++
-                active!!.pendingPrepareSeq = -1
+                if (active!!.pendingPrepareSeq != -1) {
+                    active!!.cancelledPrepareSeqs.add(active!!.pendingPrepareSeq)
+                    active!!.pendingPrepareSeq = -1
+                }
             }
         }
         if (active != null && !active!!.closed) {
@@ -352,18 +359,29 @@ class WifiAutoConnector(
             sessionToStop = currentSession
             if (sessionToStop != null) {
                 sessionToStop!!.audioEpoch++
-                sessionToStop!!.pendingPrepareSeq = -1
+                if (sessionToStop!!.pendingPrepareSeq != -1) {
+                    sessionToStop!!.cancelledPrepareSeqs.add(sessionToStop!!.pendingPrepareSeq)
+                    sessionToStop!!.pendingPrepareSeq = -1
+                }
                 sessionIDToStop = sessionToStop!!.sessionID
                 sessionToStop!!.sessionID = ""
                 sessionToStop!!.isStreaming = false
             }
+            if (sessionIDToStop.isBlank()) {
+                val currentReq = Runtime.audioRequest
+                if (currentReq != null && currentReq.mode == "wifi" && !currentReq.cancelled) {
+                    sessionIDToStop = currentReq.session
+                }
+            }
         }
-        if (sessionToStop != null && !sessionToStop!!.closed) {
+        if (sessionToStop != null && !sessionToStop!!.closed && sessionIDToStop.isNotBlank()) {
             thread(name = "linkmic-stop", isDaemon = true) {
                 sendAuthenticatedStop(sessionToStop!!, reason = "userStopped", sessionIDOverride = sessionIDToStop)
             }
         }
-        stopAudioService(expectedSessionID = sessionIDToStop, reason = "userStopped")
+        if (sessionIDToStop.isNotBlank()) {
+            stopAudioService(expectedSessionID = sessionIDToStop, reason = "userStopped")
+        }
         postOnMain { refreshSnapshot() }
     }
 
@@ -375,7 +393,10 @@ class WifiAutoConnector(
             if (curr != null && !curr.closed && curr.sessionID == session) {
                 active = curr
                 curr.audioEpoch++
-                curr.pendingPrepareSeq = -1
+                if (curr.pendingPrepareSeq != -1) {
+                    curr.cancelledPrepareSeqs.add(curr.pendingPrepareSeq)
+                    curr.pendingPrepareSeq = -1
+                }
                 curr.isStreaming = false
                 curr.sessionID = ""
             }
@@ -623,6 +644,9 @@ class WifiAutoConnector(
             val userInitiatedInt = if (userInitiated) 1 else 0
             synchronized(session.writer) {
                 session.audioEpoch++
+                if (session.pendingPrepareSeq != -1) {
+                    session.cancelledPrepareSeqs.add(session.pendingPrepareSeq)
+                }
                 val seq = session.nextClientSeq++
                 session.pendingPrepareSeq = seq
                 val fields = "${audio.sampleRate}|${audio.channels}|$formatStr|$sourceStr|$userInitiatedInt"
@@ -741,11 +765,16 @@ class WifiAutoConnector(
                         } else if (state == "ended") {
                             if (session.isStreaming || session.sessionID.isNotBlank()) {
                                 session.audioEpoch++
-                                session.pendingPrepareSeq = -1
+                                if (session.pendingPrepareSeq != -1) {
+                                    session.cancelledPrepareSeqs.add(session.pendingPrepareSeq)
+                                    session.pendingPrepareSeq = -1
+                                }
                                 val targetToStop = session.sessionID
                                 session.isStreaming = false
                                 session.sessionID = ""
-                                stopAudioService(expectedSessionID = targetToStop, reason = "stateEnded")
+                                if (targetToStop.isNotBlank()) {
+                                    stopAudioService(expectedSessionID = targetToStop, reason = "stateEnded")
+                                }
                                 postOnMain { refreshSnapshot() }
                             }
                         }
@@ -763,81 +792,92 @@ class WifiAutoConnector(
                             Runtime.log("wifi", "invalidMac", "cmd=prepared")
                             break
                         }
-                        if (ack != session.pendingPrepareSeq || session.pendingPrepareSeq == -1) {
-                            Runtime.log("wifi", "badAck", "cmd=prepared ack=$ack expected=${session.pendingPrepareSeq}")
-                            break
-                        }
-                        session.pendingPrepareSeq = -1
-                        session.lastValidResponseTimeMs = monotonicClock()
-                        session.expectedServerSeq++
+                        if (ack == session.pendingPrepareSeq && session.pendingPrepareSeq != -1) {
+                            session.pendingPrepareSeq = -1
+                            session.lastValidResponseTimeMs = monotonicClock()
+                            session.expectedServerSeq++
 
-                        if (audioPort !in 1..65535 || sessionID.isBlank()) {
-                            Runtime.log("wifi", "malformedPrepared", "port=$audioPort session=$sessionID")
-                            break
-                        }
-
-                        // Check if user stopped while prepare was in flight
-                        if (pausedByUser) {
-                            Runtime.log("wifi", "preparedIgnoredPaused", "session=$sessionID user paused")
-                            thread(name = "linkmic-cancel-grant", isDaemon = true) {
-                                sendAuthenticatedStop(session, reason = "cancelledPaused", sessionIDOverride = sessionID)
+                            if (audioPort !in 1..65535 || sessionID.isBlank()) {
+                                Runtime.log("wifi", "malformedPrepared", "port=$audioPort session=$sessionID")
+                                break
                             }
-                            session.sessionID = ""
+
+                            // Check if user stopped while prepare was in flight
+                            if (pausedByUser) {
+                                Runtime.log("wifi", "preparedIgnoredPaused", "session=$sessionID user paused")
+                                thread(name = "linkmic-cancel-grant", isDaemon = true) {
+                                    sendAuthenticatedStop(session, reason = "cancelledPaused", sessionIDOverride = sessionID)
+                                }
+                                session.sessionID = ""
+                                session.isStreaming = false
+                                postOnMain { refreshSnapshot() }
+                                continue
+                            }
+
+                            // Validate audio parameters against requested
+                            val currentAudio = Runtime.state.value.settings.audio
+                            val reqFormatStr = if (currentAudio.format == PCMFormat.I16) "i16" else "f32"
+                            val reqSourceStr = when (currentAudio.source) {
+                                RecordingSource.MICROPHONE -> "microphone"
+                                RecordingSource.UNPROCESSED -> "unprocessed"
+                                RecordingSource.VOICE_RECOGNITION -> "voiceRecognition"
+                            }
+                            if (prepRate != currentAudio.sampleRate || prepChannels != currentAudio.channels || prepFormat != reqFormatStr || prepSource != reqSourceStr) {
+                                Runtime.log("wifi", "preparedParamMismatch", "got $prepRate/$prepChannels/$prepFormat/$prepSource expected ${currentAudio.sampleRate}/${currentAudio.channels}/$reqFormatStr/$reqSourceStr")
+                                thread(name = "linkmic-cancel-param", isDaemon = true) {
+                                    sendAuthenticatedStop(session, reason = "unsupportedParams", sessionIDOverride = sessionID)
+                                }
+                                session.sessionID = ""
+                                session.isStreaming = false
+                                postOnMain { refreshSnapshot() }
+                                continue
+                            }
+
+                            session.sessionID = sessionID
                             session.isStreaming = false
-                            postOnMain { refreshSnapshot() }
-                            continue
-                        }
-
-                        // Validate audio parameters against requested
-                        val currentAudio = Runtime.state.value.settings.audio
-                        val reqFormatStr = if (currentAudio.format == PCMFormat.I16) "i16" else "f32"
-                        val reqSourceStr = when (currentAudio.source) {
-                            RecordingSource.MICROPHONE -> "microphone"
-                            RecordingSource.UNPROCESSED -> "unprocessed"
-                            RecordingSource.VOICE_RECOGNITION -> "voiceRecognition"
-                        }
-                        if (prepRate != currentAudio.sampleRate || prepChannels != currentAudio.channels || prepFormat != reqFormatStr || prepSource != reqSourceStr) {
-                            Runtime.log("wifi", "preparedParamMismatch", "got $prepRate/$prepChannels/$prepFormat/$prepSource expected ${currentAudio.sampleRate}/${currentAudio.channels}/$reqFormatStr/$reqSourceStr")
-                            thread(name = "linkmic-cancel-param", isDaemon = true) {
-                                sendAuthenticatedStop(session, reason = "unsupportedParams", sessionIDOverride = sessionID)
-                            }
-                            session.sessionID = ""
-                            session.isStreaming = false
-                            postOnMain { refreshSnapshot() }
-                            continue
-                        }
-
-                        session.sessionID = sessionID
-                        session.isStreaming = false
-                        val audioToken = WifiCrypto.audioToken(session.key, sessionID, session.clientNonce, session.serverNonce)
-                        val audioParams = AudioParameters(
-                            sampleRate = prepRate,
-                            channels = prepChannels,
-                            format = if (prepFormat == "f32") PCMFormat.F32 else PCMFormat.I16,
-                            source = when (prepSource) {
-                                "unprocessed" -> RecordingSource.UNPROCESSED
-                                "voiceRecognition" -> RecordingSource.VOICE_RECOGNITION
-                                else -> RecordingSource.MICROPHONE
-                            }
-                        )
-                        val capturedEpoch = session.audioEpoch
-                        postOnMain {
-                            if (currentSession === session && !session.closed && !pausedByUser && session.audioEpoch == capturedEpoch) {
-                                Runtime.update {
-                                    it.copy(
-                                        wifiAuto = it.wifiAuto.copy(
-                                            phase = WifiAutoPhase.PREPARING,
-                                            message = "已连接 ${session.target.name}，正在准备音频…",
-                                            connectedMacName = session.target.name
+                            val audioToken = WifiCrypto.audioToken(session.key, sessionID, session.clientNonce, session.serverNonce)
+                            val audioParams = AudioParameters(
+                                sampleRate = prepRate,
+                                channels = prepChannels,
+                                format = if (prepFormat == "f32") PCMFormat.F32 else PCMFormat.I16,
+                                source = when (prepSource) {
+                                    "unprocessed" -> RecordingSource.UNPROCESSED
+                                    "voiceRecognition" -> RecordingSource.VOICE_RECOGNITION
+                                    else -> RecordingSource.MICROPHONE
+                                }
+                            )
+                            val capturedEpoch = session.audioEpoch
+                            postOnMain {
+                                if (currentSession === session && !session.closed && !pausedByUser && session.audioEpoch == capturedEpoch) {
+                                    Runtime.update {
+                                        it.copy(
+                                            wifiAuto = it.wifiAuto.copy(
+                                                phase = WifiAutoPhase.PREPARING,
+                                                message = "已连接 ${session.target.name}，正在准备音频…",
+                                                connectedMacName = session.target.name
+                                            )
                                         )
-                                    )
-                                }
-                                onSessionReady?.invoke(sessionID, audioToken, session.target.host, audioPort, audioParams)
-                            } else {
-                                thread(name = "linkmic-cancel-stale-ready", isDaemon = true) {
-                                    sendAuthenticatedStop(session, reason = "cancelledStale", sessionIDOverride = sessionID)
+                                    }
+                                    onSessionReady?.invoke(sessionID, audioToken, session.target.host, audioPort, audioParams)
+                                } else {
+                                    thread(name = "linkmic-cancel-stale-ready", isDaemon = true) {
+                                        sendAuthenticatedStop(session, reason = "cancelledStale", sessionIDOverride = sessionID)
+                                    }
                                 }
                             }
+                        } else if (session.cancelledPrepareSeqs.remove(ack)) {
+                            session.lastValidResponseTimeMs = monotonicClock()
+                            session.expectedServerSeq++
+                            Runtime.log("wifi", "stalePreparedCancelled", "ack=$ack session=$sessionID")
+                            thread(name = "linkmic-cancel-stale-prepare", isDaemon = true) {
+                                sendAuthenticatedStop(session, reason = "cancelledStalePrepare", sessionIDOverride = sessionID)
+                            }
+                            continue
+                        } else {
+                            session.lastValidResponseTimeMs = monotonicClock()
+                            session.expectedServerSeq++
+                            Runtime.log("wifi", "unexpectedPreparedAck", "ack=$ack pending=${session.pendingPrepareSeq}")
+                            continue
                         }
                     }
                     "event-start" -> {
@@ -854,7 +894,10 @@ class WifiAutoConnector(
                         session.expectedServerSeq++
                         pausedByUser = false
                         session.audioEpoch++
-                        session.pendingPrepareSeq = -1
+                        if (session.pendingPrepareSeq != -1) {
+                            session.cancelledPrepareSeqs.add(session.pendingPrepareSeq)
+                            session.pendingPrepareSeq = -1
+                        }
                         Runtime.log("wifi", "serverEventStart", "Mac 端发起了开始拾音")
                         thread(name = "linkmic-prepare-start", isDaemon = true) {
                             sendAuthenticatedPrepare(session, userInitiated = true)
@@ -883,12 +926,19 @@ class WifiAutoConnector(
                             pausedByUser = true
                         }
                         session.audioEpoch++
-                        session.pendingPrepareSeq = -1
+                        if (session.pendingPrepareSeq != -1) {
+                            session.cancelledPrepareSeqs.add(session.pendingPrepareSeq)
+                            session.pendingPrepareSeq = -1
+                        }
                         val stoppedSession = session.sessionID
                         session.isStreaming = false
-                        session.sessionID = ""
+                        if (session.sessionID == stopSession) {
+                            session.sessionID = ""
+                        }
                         Runtime.log("wifi", "serverEventStop", "reason=$reason")
-                        stopAudioService(expectedSessionID = stoppedSession, reason = "serverEventStop: $reason")
+                        if (stoppedSession.isNotBlank()) {
+                            stopAudioService(expectedSessionID = stoppedSession, reason = "serverEventStop: $reason")
+                        }
                         postOnMain { refreshSnapshot() }
                     }
                     "stopped" -> {
@@ -900,13 +950,21 @@ class WifiAutoConnector(
                         }
                         session.lastValidResponseTimeMs = monotonicClock()
                         session.expectedServerSeq++
-                        session.audioEpoch++
-                        session.pendingPrepareSeq = -1
-                        val targetToStop = if (session.sessionID.isNotBlank()) session.sessionID else stoppedSession
-                        session.isStreaming = false
-                        session.sessionID = ""
-                        stopAudioService(expectedSessionID = targetToStop, reason = "stoppedAck")
-                        postOnMain { refreshSnapshot() }
+                        session.pendingStops.remove(ack)
+
+                        if (stoppedSession.isNotBlank() && session.sessionID == stoppedSession) {
+                            session.audioEpoch++
+                            if (session.pendingPrepareSeq != -1) {
+                                session.cancelledPrepareSeqs.add(session.pendingPrepareSeq)
+                                session.pendingPrepareSeq = -1
+                            }
+                            session.isStreaming = false
+                            session.sessionID = ""
+                            stopAudioService(expectedSessionID = stoppedSession, reason = "stoppedAck")
+                            postOnMain { refreshSnapshot() }
+                        } else {
+                            Runtime.log("wifi", "staleStoppedAckIgnored", "ack=$ack stoppedSession=$stoppedSession current=${session.sessionID}")
+                        }
                     }
                     "error" -> {
                         val code = msg.optString("code")
@@ -920,11 +978,16 @@ class WifiAutoConnector(
                         if (code == "PAUSED_BY_USER") {
                             pausedByUser = true
                             session.audioEpoch++
-                            session.pendingPrepareSeq = -1
+                            if (session.pendingPrepareSeq != -1) {
+                                session.cancelledPrepareSeqs.add(session.pendingPrepareSeq)
+                                session.pendingPrepareSeq = -1
+                            }
                             val targetToStop = session.sessionID
                             session.isStreaming = false
                             session.sessionID = ""
-                            stopAudioService(expectedSessionID = targetToStop, reason = "pausedByUser")
+                            if (targetToStop.isNotBlank()) {
+                                stopAudioService(expectedSessionID = targetToStop, reason = "pausedByUser")
+                            }
                             postOnMain { refreshSnapshot() }
                         } else if (code == "STALE_SESSION") {
                             Runtime.log("wifi", "staleSessionIgnored", code)
@@ -953,6 +1016,7 @@ class WifiAutoConnector(
         try {
             synchronized(session.writer) {
                 val seq = session.nextClientSeq++
+                session.pendingStops[seq] = targetSession
                 val fields = "$targetSession|$reason"
                 val mac = WifiCrypto.messageMAC(session.key, direction = "c", clientNonce = session.clientNonce, serverNonce = session.serverNonce, sequence = seq, command = "stop", fields = fields)
                 val req = JSONObject().put("cmd", "stop").put("seq", seq).put("session", targetSession).put("reason", reason).put("mac", mac)

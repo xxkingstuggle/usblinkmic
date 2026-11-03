@@ -1383,6 +1383,7 @@ private final class AudioDelivery: @unchecked Sendable {
   }
   guard let session=owned[module] else{
    if module == .microphone {
+    receiver.stop(); output.stop(); audioDelivery = nil
     status(.microphone, .stopped, "已停止拾音", "")
     refreshWifiSnapshot()
    }
@@ -1755,12 +1756,17 @@ extension SessionController: WifiSessionHost {
   return snapshot.audioState == .streaming && snapshot.microphone.phase == .running ? .streaming : .preparing
  }
 
- public func wifiEnd(sessionID:String,reason:String) async {
+ public func wifiEnd(sessionID:String,phoneID:String? = nil,reason:String) async {
+  if let phoneID = phoneID, let grant = autoGrant, grant.sessionID == sessionID, grant.phoneID != phoneID {
+   return
+  }
   guard autoGrant?.sessionID == sessionID || owned[.microphone]?.id == sessionID else{return}
   log("wifi","sessionEnd","session=\(sessionID), reason=\(reason)")
   revokeMicrophoneIntent("wifi-\(reason)")
-  if owned[.microphone]?.id == sessionID {await stop(.microphone,source:.phone)}
-  if autoGrant?.sessionID == sessionID {autoGrant=nil}
+  if autoGrant?.sessionID == sessionID {
+   autoGrant = nil
+  }
+  await stop(.microphone,source:.phone)
   refreshWifiSnapshot()
  }
 

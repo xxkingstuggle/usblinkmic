@@ -184,10 +184,68 @@
 ## 8. 实际执行与跳过的检查
 
 - **实际执行的离线类型检查**：
-  1. `swift build`：**通过**（exit code 0，耗时 5.05s，无错误）。
-  2. `./android/gradlew -p android :app:compileDebugKotlin --console=plain`：**通过**（exit code 0，`BUILD SUCCESSFUL in 11s`，15 actionable tasks）。
+  1. `swift build`：**通过**（exit code 0，耗时 5.22s，无错误）。
+  2. `swift build --build-tests`：**通过**（exit code 0，耗时 2.70s，全部测试目标编译无错误）。
+  3. `./android/gradlew -p android :app:compileDebugKotlin --console=plain`：**通过**（exit code 0，`BUILD SUCCESSFUL in 11s`，15 actionable tasks）。
 - **按明确约束跳过的检查**：
   - 未运行任何测试套件（Mac 隔离测试、Android 单元测试均按用户要求未执行）。
   - 未执行 ADB 指令、真机交互、应用安装、模拟器或抓包调试。
   - 未启动任何脱离进程组的守护服务。
   - 未执行 `git push`。
+
+---
+
+## 9. 终审六项不变量静态调用链推演 (Final Six Invariants Static Walk Audit)
+
+### 9.1 时序 1：会话 A 停止后，迟到的 `stopped` ACK 绝不误杀新会话 B (Late Stopped ACK Correlation)
+- **风险模型**：手机发起 Stop(A) (`pendingStops[seqA] = A`)，随后快速发起 Start(B) 并准备就绪 (`session.sessionID = B`)。随后 Mac 端针对 seqA 的 `{"cmd":"stopped", "ack":seqA, "session":A}` 到达。
+- **静态代码链与防护**：
+  - `WifiAutoConnector.kt:948` 收到 `stopped`：从 `pendingStops` 移除 `ack`，解析得到 `stoppedSession = A`。
+  - 执行强校验：`if (stoppedSession.isNotBlank() && session.sessionID == stoppedSession)`。
+  - 此时 `session.sessionID == B != A`，条件为 false。
+  - 执行 `Runtime.log("wifi", "staleStoppedAckIgnored", ...)` 并安全忽略。
+  - 绝不调用 `stopAudioService`，不清除 `session.sessionID`，不自增 `audioEpoch`，不打断 B 的 `pendingPrepareSeq`，TCP 控制通道保持正常运行。
+
+### 9.2 时序 2：空闲控制通道关闭绝不触发通配符全局音频拆除 (No Wildcard stopAudioService)
+- **风险模型**：手机端旧的控制长连接发生超时断开，或控制通道处于空闲未采音状态（`capturedSessionID == ""`）。
+- **静态代码链与防护**：
+  - `WifiAutoConnector.kt:1038` 执行 `closeSessionIfOwner`，传入 `capturedSessionID = ""`。
+  - `WifiAutoConnector.kt:306` `stopAudioService(expectedSessionID)` 入口第 1 行严格执行 `if (expectedSessionID.isBlank()) return`。
+  - 空 ID 立即拦截返回，绝不接触全局 `Runtime.audioRequest`，绝不向系统发送 `Runtime.stop(context, req)`。
+  - 哪怕此时已由 USB 模式或全新 Wi-Fi 会话建立了录音，均获得绝对所有权隔离，不受空闲控制连接释放影响。
+
+### 9.3 时序 3：Prepare 发起后被用户取消，迟到 `prepared` 优雅回收且不破坏通道 (Prepare / Cancel Reordering)
+- **风险模型**：手机发出 `prepare(seq = 10)`，用户在握手响应返回前点击“停止拾音” (`onUserStoppedExplicitly`)；随后 Mac 端针对 seq=10 的 `prepared(ack = 10, session = grantA)` 到达。
+- **静态代码链与防护**：
+  - 用户点击停止：`active.cancelledPrepareSeqs.add(10)`，`active.pendingPrepareSeq = -1`，`audioEpoch++`。
+  - Mac 响应到达：`WifiAutoConnector.kt:786` 首先进行 HMAC-SHA256 逐包鉴权，校验通过。
+  - 进入判断 `ack == session.pendingPrepareSeq` (false，此时为 -1)。
+  - 进入 `else if (session.cancelledPrepareSeqs.remove(ack))` (true，10 被移除并命中)。
+  - `session.expectedServerSeq++`，记录日志 `stalePreparedCancelled`。
+  - 在后台守护线程发出 `sendAuthenticatedStop(session, reason = "cancelledStalePrepare", sessionIDOverride = grantA)`，通知 Mac 释放已分配的 `grantA`。
+  - **不退出 `runSessionLoop`（不 break），不抛出异常，不修改当前已清空或属于新会话的 `sessionID`**，TCP 长连接保持活跃。
+
+### 9.4 时序 4：对端所有权安全防线，Peer B 绝不篡改/终止 Peer A 的授权 (Peer Ownership Security)
+- **风险模型**：Peer A 处于活跃采音或 prepare 准备状态，Peer B（拥有合法的单独局域网认证密钥）连接至 Mac 并发送 `{"cmd":"stop", "session":grantA}`。
+- **静态代码链与防护**：
+  - `macos/Support/WifiControlService.swift:440` 处理 `stop` 指令。
+  - 检查 `if let current = active, current.id == session`：
+  - 执行所有权核对：`guard current.phoneID == conn.phoneID else { return push(conn, command: "error", ack: seq, fields: ["code": "FORBIDDEN"], macFields: "FORBIDDEN") }`。
+  - 此时 `current.phoneID (A) != conn.phoneID (B)`，直接向 Peer B 回送已签名的 `FORBIDDEN` 错误响应，阻断执行，绝不调用 `host?.wifiEnd`。
+  - 在后备路径中，`wifiEnd` 传递 `phoneID: conn.phoneID`；`macos/Core/SessionController.swift:1760` 收到后同样校验 `if let phoneID = phoneID, let grant = autoGrant, grant.sessionID == sessionID, grant.phoneID != phoneID { return }`，两层防御彻底杜绝越权停止。
+
+### 9.5 时序 5：未配对引导与按钮可用性状态机闭环 (UI / Action Routing in Auto-Connect)
+- **风险模型**：用户开启了“局域网自动连接”，但当前 `trusted` 为空（尚未配对任何 Mac）。
+- **静态代码链与防护**：
+  - `LinkMicScreen.kt:233`：`canStart = !settingsDirty && (if (snapshot.settings.wifiAutoConnect) hasTrustedMac else snapshot.settings.wifiHost.isNotBlank())`。
+  - 由于 `hasTrustedMac` 为 false，`canStart` 严格计算为 `false`。
+  - 界面“开始拾音”按钮呈现禁用状态，下方清晰提示：“未绑定 Mac：请在下方局域网列表中选择 Mac，核对 6 位验证码完成绑定”。
+  - 若通过快捷动作调用 `UserAction.StartWifi`，`MainActivity.kt:175` 拦截：`if (settings.wifiAutoConnect)` 分支直接检查 `trustStore.loadTrustedMacs()`，若为空则在界面上显示 `尚未绑定 Mac，请在下方已发现设备中点击配对` 并直接 `return`，绝不回退至旧的 `settings.wifiHost` 手动连接。
+
+### 9.6 时序 6：Mac 端在 `wifiEnd` 中彻底取消排队与在途音频任务 (Mac Pending Cancellation in wifiEnd)
+- **风险模型**：手机端发起 `wifiEnd`，此时 Mac 端可能处于 `wifiPrepare` 刚刚批准 `autoGrant`、正在启动 AudioReceiver 的临界状态，`owned[.microphone]` 尚为空但 `jobs[.microphone]` 正在运行。
+- **静态代码链与防护**：
+  - `SessionController.swift:1765` 收到 `wifiEnd`，调用 `await stop(.microphone, source: .phone)`。
+  - `SessionController.swift:1378` 立即执行 `jobs[.microphone]?.cancel()`，取消在途启动协程。
+  - 若 `autoGrant` 匹配，清理 `autoGrant = nil` 并通知 `wifiService`。
+  - 当 `owned[.microphone] == nil` 命中时：执行 `receiver.stop(); output.stop(); audioDelivery = nil`，清理底层音频资源，并更新状态为 `.stopped`，杜绝任何孤儿音频监听套接字残留。

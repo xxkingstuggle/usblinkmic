@@ -32,10 +32,19 @@ public enum WifiSessionPhase: String, Sendable { case preparing, streaming, ende
  /// Starts the audio receiver for exactly this session and returns only once it is listening.
  func wifiPrepare(_ request: WifiPrepareRequest) async -> WifiPrepareResult
  /// Stops the receiver iff it still belongs to `sessionID`; later sessions are never affected.
- func wifiEnd(sessionID: String, reason: String) async
+ func wifiEnd(sessionID: String, phoneID: String?, reason: String) async
  func wifiPhase(sessionID: String) -> WifiSessionPhase
  /// Pairing prompt, trusted set or connected phone changed.
  func wifiServiceChanged()
+}
+
+extension WifiSessionHost {
+ public func wifiEnd(sessionID: String, phoneID: String?, reason: String) async {
+  await wifiEnd(sessionID: sessionID, reason: reason)
+ }
+ public func wifiEnd(sessionID: String, reason: String) async {
+  await wifiEnd(sessionID: sessionID, phoneID: nil, reason: reason)
+ }
 }
 
 public protocol WifiPeerConnection: AnyObject {
@@ -155,11 +164,11 @@ public protocol WifiPeerConnection: AnyObject {
    let orphaned = connection == nil
     ? now.timeIntervalSince(current.lostAt ?? now) > Self.orphanGrace
     : silent
-   if orphaned {
-    active = nil
-    await host?.wifiEnd(sessionID: current.id, reason: "control-lost")
-    host?.wifiServiceChanged()
-   }
+    if orphaned {
+     active = nil
+     await host?.wifiEnd(sessionID: current.id, phoneID: current.phoneID, reason: "control-lost")
+     host?.wifiServiceChanged()
+    }
   }
   authFailures = authFailures.mapValues { $0.filter { now.timeIntervalSince($0) < 60 } }.filter { !$0.value.isEmpty }
  }
@@ -210,7 +219,7 @@ public protocol WifiPeerConnection: AnyObject {
   if let conn = connections[current.connectionID], conn.phase == .authenticated {
    push(conn, command: "event-stop", ack: 0, fields: ["session": current.id, "reason": reason], macFields: "\(current.id)|\(reason)")
   }
-  await host?.wifiEnd(sessionID: current.id, reason: reason)
+  await host?.wifiEnd(sessionID: current.id, phoneID: current.phoneID, reason: reason)
   host?.wifiServiceChanged()
  }
 
@@ -387,7 +396,7 @@ public protocol WifiPeerConnection: AnyObject {
    guard current.phoneID == conn.phoneID else { return reject("BUSY") }
    // Same phone: its previous session (possibly on a dead connection) is superseded.
    active = nil
-   await host?.wifiEnd(sessionID: current.id, reason: "replaced")
+   await host?.wifiEnd(sessionID: current.id, phoneID: current.phoneID, reason: "replaced")
   }
   let sessionID = WifiCrypto.randomHex(byteCount: 16)
   guard let key = conn.key else { return reject("NOT_TRUSTED") }
@@ -398,7 +407,7 @@ public protocol WifiPeerConnection: AnyObject {
   let result = await host?.wifiPrepare(WifiPrepareRequest(phoneID: conn.phoneID, phoneName: conn.phoneName, audio: audio, sessionID: sessionID, audioToken: token, userInitiated: userInitiated)) ?? .rejected(code: "UNAVAILABLE")
   // A newer prepare, a stop or a forget may have run while the receiver was starting.
   guard active?.id == sessionID else {
-   await host?.wifiEnd(sessionID: sessionID, reason: "superseded")
+   await host?.wifiEnd(sessionID: sessionID, phoneID: conn.phoneID, reason: "superseded")
    return reject("SUPERSEDED")
   }
   switch result {
@@ -435,13 +444,16 @@ public protocol WifiPeerConnection: AnyObject {
   guard !session.isEmpty else {
    return push(conn, command: "error", ack: seq, fields: ["code": "BAD_REQUEST"], macFields: "BAD_REQUEST")
   }
-  if let current = active, current.id == session, current.phoneID == conn.phoneID {
+  if let current = active, current.id == session {
+   guard current.phoneID == conn.phoneID else {
+    return push(conn, command: "error", ack: seq, fields: ["code": "FORBIDDEN"], macFields: "FORBIDDEN")
+   }
    active = nil
    pausedByUser = true
-   await host?.wifiEnd(sessionID: session, reason: "phone-\(m["reason"] as? String ?? "stop")")
+   await host?.wifiEnd(sessionID: session, phoneID: conn.phoneID, reason: "phone-\(m["reason"] as? String ?? "stop")")
    host?.wifiServiceChanged()
   } else {
-   await host?.wifiEnd(sessionID: session, reason: "phone-\(m["reason"] as? String ?? "stop")")
+   await host?.wifiEnd(sessionID: session, phoneID: conn.phoneID, reason: "phone-\(m["reason"] as? String ?? "stop")")
   }
   push(conn, command: "stopped", ack: seq, fields: ["session": session], macFields: session)
  }

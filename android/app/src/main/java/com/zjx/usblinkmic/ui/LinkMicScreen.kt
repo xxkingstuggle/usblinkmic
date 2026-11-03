@@ -230,7 +230,7 @@ private fun MicrophonePage(
         TaskPhase.STOPPING,
     )
     val hasTrustedMac = snapshot.settings.wifiAutoConnect && snapshot.wifiAuto.trusted.isNotEmpty()
-    val canStart = !settingsDirty && (snapshot.settings.wifiHost.isNotBlank() || hasTrustedMac)
+    val canStart = !settingsDirty && (if (snapshot.settings.wifiAutoConnect) hasTrustedMac else snapshot.settings.wifiHost.isNotBlank())
     val effectiveAudio = snapshot.effectiveAudio ?: snapshot.settings.audio
 
     Column(

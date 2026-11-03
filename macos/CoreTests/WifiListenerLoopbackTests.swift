@@ -6,7 +6,7 @@ import Support
 
 @MainActor private final class IdleHost: WifiSessionHost {
  func wifiPrepare(_ request: WifiPrepareRequest) async -> WifiPrepareResult { .rejected(code: "UNAVAILABLE") }
- func wifiEnd(sessionID: String, reason: String) async {}
+ func wifiEnd(sessionID: String, phoneID: String? = nil, reason: String) async {}
  func wifiPhase(sessionID: String) -> WifiSessionPhase { .ended }
  func wifiServiceChanged() {}
 }

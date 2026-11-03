@@ -28,7 +28,7 @@ private final class FakeConn: WifiPeerConnection {
   }
   return nextResult
  }
- func wifiEnd(sessionID: String, reason: String) async { ended.append((sessionID, reason)); phases[sessionID] = .ended }
+ func wifiEnd(sessionID: String, phoneID: String? = nil, reason: String) async { ended.append((sessionID, reason)); phases[sessionID] = .ended }
  func wifiPhase(sessionID: String) -> WifiSessionPhase { phases[sessionID] ?? .ended }
  func wifiServiceChanged() { changes += 1 }
 }
