@@ -10,16 +10,19 @@ public struct CommandResult: Equatable, Sendable {
  public let output: String
  public let terminationReason: ProcessTerminationReason
  public let terminationSignal: Int32?
+ public let timedOut: Bool
  public init(
   code: Int32,
   output: String,
   terminationReason: ProcessTerminationReason = .exit,
-  terminationSignal: Int32? = nil
+  terminationSignal: Int32? = nil,
+  timedOut: Bool = false
  ) {
   self.code = code
   self.output = output
   self.terminationReason = terminationReason
   self.terminationSignal = terminationSignal
+  self.timedOut = timedOut
  }
 }
 public enum LinkError: LocalizedError {
@@ -146,6 +149,7 @@ internal final class ProcessExecution: @unchecked Sendable {
  private var exitCode: Int32 = 0
  private var terminationSignal: Int32? = nil
  private var interrupted = false
+ private var timedOut = false
  private var finalKillSent = false
  private var completed = false
  private var readFDClosed = false
@@ -295,7 +299,9 @@ internal final class ProcessExecution: @unchecked Sendable {
   let timer = DispatchSource.makeTimerSource(queue: queue)
   timer.schedule(deadline: .now() + max(0.001, timeout))
   timer.setEventHandler { [weak self] in
-   self?.terminateOnQueue()
+   guard let self, !self.completed, !self.interrupted else {return}
+   self.timedOut = true
+   self.terminateOnQueue()
   }
   self.timeoutTimer = timer
   timer.resume()
@@ -484,7 +490,7 @@ internal final class ProcessExecution: @unchecked Sendable {
   let reason: ProcessTerminationReason = signal != nil ? .uncaughtSignal : .exit
   let code = interrupted ? (exitCode != 0 ? exitCode : Int32(SIGTERM)) : exitCode
   let output = String(decoding: outputData, as: UTF8.self)
-  resumeOnce(.success(CommandResult(code: code, output: output, terminationReason: reason, terminationSignal: signal)))
+  resumeOnce(.success(CommandResult(code: code, output: output, terminationReason: reason, terminationSignal: signal, timedOut: timedOut)))
   queue.async { [weak self] in
    self?.retainedSelf = nil
   }
@@ -581,6 +587,9 @@ public struct ADB {
  public func run(_ serial: String? = nil, _ args: [String], timeout: TimeInterval = 20, cancellable:Bool = false) async throws -> String {
   let arguments = (serial.map { ["-s",$0] } ?? []) + args
   let result = try await ProcessRunner.run(executable, arguments, timeout: timeout,cancellable:cancellable)
+  if result.timedOut {
+   throw LinkError.failure("ADB_TIMEOUT","ADB \(args.first ?? "cmd") 在 \(timeout) 秒内未响应")
+  }
   guard result.code == 0, result.terminationReason == .exit else {
    let code = Self.classify(result)
    let detail = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -593,7 +602,8 @@ public struct ADB {
   text.split(separator:"\n").contains {line in let f=line.split(whereSeparator:{$0.isWhitespace}).map(String.init);return f.count>=3 && f[0]==serial && f[1]==local && f[2]==remote}
  }
  public static func classify(_ result: CommandResult) -> String {
-  classify(
+  if result.timedOut {return "ADB_TIMEOUT"}
+  return classify(
    result.output,
    exitCode: result.code,
    terminationReason: result.terminationReason,

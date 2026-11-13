@@ -54,8 +54,13 @@ final class CoreTests:XCTestCase {
   case "$*" in
     "forward --list") echo "recovery-phone tcp:\(port) tcp:48125";;
     "devices -l") echo "recovery-phone device usb:1-1";;
+    "-s recovery-phone shell -T echo usblinkmic-adb-ready")
+      if [ ! -f "\(root.path)/reconnected" ]; then exec /bin/sleep 10; fi
+      echo usblinkmic-adb-ready;;
+    "-s recovery-phone reconnect") touch "\(root.path)/reconnected";;
     "-s recovery-phone install -r \(root.path)/companion.apk") touch "$installed";;
     "-s recovery-phone shell pm list packages com.zjx.usblinkmic")
+      [ -f "\(root.path)/reconnected" ] || exit 1
       if [ -f "$installed" ]; then echo "package:com.zjx.usblinkmic"; fi;;
     "-s recovery-phone shell content call "*)
       [ -f "$installed" ] || exit 1
@@ -89,9 +94,11 @@ final class CoreTests:XCTestCase {
    try await Task.sleep(nanoseconds:50_000_000)
   }
   _ = await controller.shutdown(timeout:1)
+  XCTAssertTrue(controller.snapshot.logs.contains{$0.stage=="adbTransportRecovered"})
   XCTAssertTrue(controller.snapshot.logs.contains{$0.stage=="recoveryCompanionMissing"})
   XCTAssertTrue(controller.snapshot.logs.contains{$0.stage=="cancelAcknowledged"})
   XCTAssertTrue(controller.snapshot.logs.contains{$0.stage=="recovered"},controller.snapshot.recoveryMessage)
+  XCTAssertEqual(controller.snapshot.phoneInternet.phase,.stopped)
   XCTAssertEqual(try String(contentsOf:journal,encoding:.utf8),"[]")
  }
  @MainActor func testReadOnlyCoreAudioOutputDiscovery(){
@@ -222,6 +229,10 @@ final class CoreTests:XCTestCase {
   if [ "$1" = "devices" ]; then
    echo "List of devices attached"
    echo "new-phone device usb:1-2"
+   exit 0
+  fi
+  if [ "$*" = "-s new-phone shell -T echo usblinkmic-adb-ready" ]; then
+   echo usblinkmic-adb-ready
    exit 0
   fi
   exit 1
@@ -485,6 +496,7 @@ final class CoreTests:XCTestCase {
   defer { if let pid=childPID { _ = Darwin.kill(pid,SIGKILL) } }
   XCTAssertLessThan(elapsed,1.5,"SIGTERM-ignoring process group must be SIGKILLed within short grace period")
   XCTAssertNotEqual(result.code,0)
+  XCTAssertEqual(ADB.classify(result),"ADB_TIMEOUT")
   if let pid=childPID {
    XCTAssertNotEqual(Darwin.kill(pid,0),0,"Descendant in SIGTERM-ignoring shell must be terminated")
   } else {

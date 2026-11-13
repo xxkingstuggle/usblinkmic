@@ -520,6 +520,7 @@ private final class AudioDelivery: @unchecked Sendable {
       throw LinkError.failure("CLEANUP_INCOMPLETE","退出清理达到总期限，保留恢复记录")
      }
      removePending(session.id);try saveJournal();if !warnings.isEmpty {log(module.rawValue,"recoveryWarning","session=\(session.id), warnings=\(warnings.joined(separator:"；"))")}
+     showRecoveryCompleted(module)
      log(module.rawValue,"recovered","session=\(session.id), elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime-sessionBegan)*1000)), 上次会话资源已清理；未重新开始任务")
     }catch {
      if quitting { shutdownCleanupAttempted.insert(module) }
@@ -692,10 +693,18 @@ private final class AudioDelivery: @unchecked Sendable {
    try saveJournal()
    if !warnings.isEmpty {log(session.module,"recoveryWarning","session=\(session.id), warnings=\(warnings.joined(separator:"；"))")}
    log(session.module,"recovered","session=\(session.id), device=\(deviceAlias(session.serial)), 原手机已重连并完成待处理清理")
+   if let module=Workspace(rawValue:session.module) {showRecoveryCompleted(module)}
    snapshot.recoveryMessage=pendingRecovery.isEmpty ? "原手机资源已清理" : recoveryMessageForPending()
   }catch {
    log(session.module,"recoveryRetryPending","session=\(session.id), error=\(error.localizedDescription)")
+   if let module=Workspace(rawValue:session.module),owned[module]==nil {
+    status(module,.failed,"旧会话清理未完成",error.localizedDescription,"CLEANUP_INCOMPLETE")
+   }
   }
+ }
+ private func showRecoveryCompleted(_ module:Workspace) {
+  guard owned[module]==nil,!pendingRecovery.contains(where:{$0.module==module.rawValue}) else{return}
+  status(module,.stopped,"已停止")
  }
  private func reconcileDeviceSessions() async {
   guard !recovering,!quitting,!Task.isCancelled else{return}
@@ -761,6 +770,10 @@ private final class AudioDelivery: @unchecked Sendable {
     adbServerWarm = true
     guard let device=devices.first(where:{$0.0==serial}) else{throw LinkError.failure("DEVICE_DISCONNECTED","所选手机未连接")}
     guard device.1=="device" else{throw LinkError.failure(device.1=="unauthorized" ? "USB_UNAUTHORIZED":"DEVICE_OFFLINE","请在所选手机确认USB调试授权并重试")}
+    if module == .phoneInternet {
+     _ = try await recoverStalledADB(serial,module:module.rawValue)
+     guard valid(module,id) else{throw CancellationError()}
+    }
     try await prepareCompanion(module,id,serial)
    }
    guard valid(module,id) else{return}
@@ -840,13 +853,22 @@ private final class AudioDelivery: @unchecked Sendable {
   status(module,.connecting,"正在启动手机会话","已从Mac发起；仅缺少系统录音或VPN权限时需要手机处理")
   // am start completes before onNewIntent registers the new request. Wait for the
   // authenticated session, without treating the previous control server as a protocol mismatch.
-  let deadline=ProcessInfo.processInfo.systemUptime+8
+  var deadline=ProcessInfo.processInfo.systemUptime+8
+  var checkedTransport=false
   while valid(module,id) {
    do{_ = try await poll(module,id);return}
    catch {
     guard ProcessInfo.processInfo.systemUptime<deadline else{throw error}
     guard case LinkError.failure(let code,_) = error,["CONTROL_SESSION_PENDING","CONTROL_CONNECT","CONTROL_SEND","CONTROL_TIMEOUT"].contains(code) else{throw error}
     log(module.rawValue,"controlRegistrationPending","等待本次会话登记：\(code)")
+    if code=="CONTROL_TIMEOUT",!checkedTransport {
+     checkedTransport=true
+     if try await recoverStalledADB(serial,module:module.rawValue) {
+      guard valid(module,id) else{throw CancellationError()}
+      try await ensureControlForward(serial:serial,port:port,target:settings.controlPort)
+      deadline=ProcessInfo.processInfo.systemUptime+8
+     }
+    }
    }
    try await Task.sleep(nanoseconds:300_000_000)
   }
@@ -1556,22 +1578,20 @@ private final class AudioDelivery: @unchecked Sendable {
  private func cancelPhone(_ s:OwnedSession, repairingCompanion:Bool) async throws {
   try checkCleanupAllowed()
   guard let port=s.controlForward,let target=s.controlTarget,(1...65535).contains(port),(1...65535).contains(target) else{throw LinkError.failure("CONTROL_FORWARD","取消回执缺少有效控制端口")}
-  let mappings=try await adb.run(nil,["forward","--list"],timeout:3,cancellable:quitting)
-  try checkCleanupAllowed()
-  let local="tcp:\(port)"
-  if !ADB.ownsMapping(mappings,serial:s.serial,local:local,remote:"tcp:\(target)") {
-   guard !mappings.split(separator:"\n").contains(where:{$0.split(whereSeparator:{$0.isWhitespace}).dropFirst().first==Substring(local)}) else{throw LinkError.failure("OWNERSHIP_CHANGED","取消控制端口已被其他会话使用，未覆盖")}
-   _ = try await adb.run(s.serial,["forward","--no-rebind",local,"tcp:\(target)"],timeout:3,cancellable:quitting)
-   try checkCleanupAllowed()
-  }
+  try await ensureControlForward(serial:s.serial,port:port,target:target)
   func acknowledged(_ response:[String:Any])->Bool {response["protocol"] as? Int==4 && response["session"] as? String==s.id && response["cancelAccepted"] as? Bool==true && response["producerStopped"] as? Bool==true}
   var accepted=false
   do {
    let response=try await ControlClient.request(port:port,body:["command":"stop","session":s.id,"token":s.token])
    accepted=response["session"] as? String==s.id && response["cancelAccepted"] as? Bool==true
    if acknowledged(response) {log(s.module,"cancelAcknowledged","取消已接受，生产者已停止；继续恢复资源");return}
+  } catch {
+   log(s.module,"cancelControlPending",error.localizedDescription)
+   if !quitting,case LinkError.failure("CONTROL_TIMEOUT",_)=error,
+      try await recoverStalledADB(s.serial,module:s.module) {
+    try await ensureControlForward(serial:s.serial,port:port,target:target)
+   }
   }
-  catch {log(s.module,"cancelControlPending",error.localizedDescription)}
   try checkCleanupAllowed()
   if !accepted {
    let capabilityCommand=["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"]
@@ -1604,6 +1624,49 @@ private final class AudioDelivery: @unchecked Sendable {
    try await Task.sleep(nanoseconds:300_000_000)
   }while ProcessInfo.processInfo.systemUptime<deadline
   throw LinkError.failure("STOP_NOT_ACKNOWLEDGED","手机未确认取消；保留控制通道与恢复记录，请重试停止")
+ }
+ private func ensureControlForward(serial:String,port:Int,target:Int) async throws {
+  let mappings=try await adb.run(nil,["forward","--list"],timeout:3,cancellable:quitting)
+  try checkCleanupAllowed()
+  let local="tcp:\(port)",remote="tcp:\(target)"
+  if ADB.ownsMapping(mappings,serial:serial,local:local,remote:remote) {return}
+  guard !mappings.split(separator:"\n").contains(where:{$0.split(whereSeparator:{$0.isWhitespace}).dropFirst().first==Substring(local)}) else{
+   throw LinkError.failure("OWNERSHIP_CHANGED","控制端口已被其他会话使用")
+  }
+  _ = try await adb.run(serial,["forward","--no-rebind",local,remote],timeout:3,cancellable:quitting)
+  try checkCleanupAllowed()
+ }
+ private func recoverStalledADB(_ serial:String,module:String) async throws -> Bool {
+  let probe=["shell","-T","echo","usblinkmic-adb-ready"]
+  do {
+   _ = try await adb.run(serial,probe,timeout:2,cancellable:true)
+   return false
+  } catch LinkError.failure("USB_UNAUTHORIZED",_) {
+   throw LinkError.failure("USB_UNAUTHORIZED","请解锁手机并允许 USB 调试，然后重试")
+  } catch LinkError.failure("ADB_TIMEOUT",_) {
+   try Task.checkCancellation()
+   try checkCleanupAllowed()
+   guard !quitting else{throw CancellationError()}
+   log(module,"adbTransportReconnect","ADB 命令通道超时，重连本次会话的手机")
+   _ = try await adb.run(serial,["reconnect"],timeout:3,cancellable:true)
+  }
+  let deadline=ProcessInfo.processInfo.systemUptime+12
+  repeat {
+   try Task.checkCancellation()
+   try checkCleanupAllowed()
+   guard !quitting else{throw CancellationError()}
+   do {
+    let response=try await adb.run(serial,probe,timeout:2,cancellable:true)
+    if response=="usblinkmic-adb-ready" {
+     log(module,"adbTransportRecovered","手机 ADB 命令通道已恢复")
+     return true
+    }
+   } catch LinkError.failure("USB_UNAUTHORIZED",_) {
+    throw LinkError.failure("USB_UNAUTHORIZED","请解锁手机并允许 USB 调试，然后重试")
+   } catch LinkError.failure(let code,_) where ["ADB_TIMEOUT","DEVICE_DISCONNECTED","DEVICE_OFFLINE"].contains(code) {}
+   try await Task.sleep(for:.milliseconds(400))
+  } while ProcessInfo.processInfo.systemUptime<deadline
+  throw LinkError.failure("ADB_TIMEOUT","USB 调试重连后仍未响应，请重新插拔手机再试")
  }
  public func stop(_ module:Workspace) async {
   await stop(module,source:.system)
