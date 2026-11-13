@@ -87,10 +87,16 @@ private final class AudioDelivery: @unchecked Sendable {
  private let journal:URL
  private let diagnosticLog:DiagnosticLog
  private var owned:[Workspace:OwnedSession]=[:]
+ private var pendingRecovery:[OwnedSession]=[]
+ private var missingDeviceSince:[String:TimeInterval]=[:]
+ private var pendingRecoveryAttemptAt:[String:TimeInterval]=[:]
+ private var pendingRecoveryInProgress=Set<String>()
+ private let missingDeviceGrace:TimeInterval = 6
  private(set) var activeSessions:[Workspace:String]=[:]
  private var deviceAliases:[String:String]=[:]
  private var jobs:[Workspace:Task<Void,Never>]=[:]
  private var jobIDs:[Workspace:String]=[:]
+ private var deferredStartTargets:[Workspace:String]=[:]
  private var stopping=Set<Workspace>()
  private var stopJobs:[Workspace:Task<Void,Never>]=[:]
  private var recoveryJob:Task<Void,Never>?
@@ -185,7 +191,7 @@ private final class AudioDelivery: @unchecked Sendable {
   observer.start()
   startWifiAutoConnectIfNeeded()
   ProcessRunner.$currentGroup.withValue(processGroup) {
-   recoveryJob=Task {await recover();recovering=false;recoveryJob=nil;if !quitting {await refresh()}}
+   recoveryJob=Task {await refresh();await recover();recovering=false;recoveryJob=nil;if !quitting {await refresh()}}
    timer=Task {while !Task.isCancelled,!quitting {try? await Task.sleep(nanoseconds:1_000_000_000);if !Task.isCancelled,!quitting {await tick()}}}
    deviceMonitor=Task {while !Task.isCancelled,!quitting {try? await Task.sleep(nanoseconds:3_000_000_000);if !Task.isCancelled,!quitting,!recovering {await refresh()}}}
   }
@@ -255,11 +261,12 @@ private final class AudioDelivery: @unchecked Sendable {
     log("devices","userAction","source=\(source.rawValue), action=refresh")
     Task{await refresh(manual:true,source:source)}
    case .selectDevice(let serial):
-    let prev=snapshot.selectedDeviceID ?? ""
-    if serial != snapshot.selectedDeviceID {
-     log("devices","userAction","source=\(source.rawValue), action=selectDevice, from=\(deviceAlias(prev)), to=\(deviceAlias(serial))")
+    let previous=snapshot.selectedDeviceID
+    if serial != previous {
+     log("devices","userAction","source=\(source.rawValue), action=selectDevice, from=\(deviceAlias(previous ?? "")), to=\(deviceAlias(serial))")
      revokeMicrophoneIntent("deviceChanged")
-     Task{await stop(.microphone,source:source)}
+     if let previous {cancelDeferredStarts(for:previous)}
+     Task{await stopSessions(for:previous,source:source)}
     }
     snapshot.selectedDeviceID=serial
    case .start(let module):
@@ -430,7 +437,7 @@ private final class AudioDelivery: @unchecked Sendable {
   }
  }
  private func saveOnboarding(){do{try FileManager.default.createDirectory(at:onboardingURL.deletingLastPathComponent(),withIntermediateDirectories:true);try JSONEncoder().encode(["skipped":snapshot.wizardSkipped,"soundTest":snapshot.soundTestCompleted]).write(to:onboardingURL,options:.atomic)}catch{log("wizard","saveFailed",error.localizedDescription)}}
- private func log(_ module:String,_ stage:String,_ text:String){guard !diagnosticsClosed else{return};var safe=text;for serial in Set(snapshot.devices.map{$0.id}+owned.values.map{$0.serial}+[snapshot.selectedDeviceID ?? ""]) where !serial.isEmpty {safe=safe.replacingOccurrences(of:serial,with:"serial=[REDACTED]")};for credential in Set(owned.values.map{$0.token}+[snapshot.settings.pairingCode]) where !credential.isEmpty {safe=safe.replacingOccurrences(of:credential,with:"[REDACTED]")};let entry=LogEntry(module:module,stage:stage,message:"uptime=\(String(format:"%.3f",ProcessInfo.processInfo.systemUptime)) boot=\(bootID) "+String(LogRedactor.redact(safe).prefix(8192)));snapshot.logs.append(entry);diagnosticLog.appendAsync(entry) { [weak self] error in if let error {let message=error.localizedDescription;Task {@MainActor in self?.snapshot.recoveryMessage="诊断日志写入失败：\(message)"}}};if snapshot.logs.count>500 {snapshot.logs.removeFirst(snapshot.logs.count-500)}}
+ private func log(_ module:String,_ stage:String,_ text:String){guard !diagnosticsClosed else{return};var safe=text;for serial in Set(snapshot.devices.map{$0.id}+owned.values.map{$0.serial}+pendingRecovery.map{$0.serial}+[snapshot.selectedDeviceID ?? ""]) where !serial.isEmpty {safe=safe.replacingOccurrences(of:serial,with:"serial=[REDACTED]")};for credential in Set(owned.values.map{$0.token}+pendingRecovery.map{$0.token}+[snapshot.settings.pairingCode]) where !credential.isEmpty {safe=safe.replacingOccurrences(of:credential,with:"[REDACTED]")};let entry=LogEntry(module:module,stage:stage,message:"uptime=\(String(format:"%.3f",ProcessInfo.processInfo.systemUptime)) boot=\(bootID) "+String(LogRedactor.redact(safe).prefix(8192)));snapshot.logs.append(entry);diagnosticLog.appendAsync(entry) { [weak self] error in if let error {let message=error.localizedDescription;Task {@MainActor in self?.snapshot.recoveryMessage="诊断日志写入失败：\(message)"}}};if snapshot.logs.count>500 {snapshot.logs.removeFirst(snapshot.logs.count-500)}}
  private func status(_ module:Workspace,_ phase:TaskPhase,_ stage:String,_ detail:String="",_ code:String?=nil) {
   var s=ModuleStatus();s.phase=phase;s.stage=stage;s.detail=detail;s.errorCode=code;s.taskID=owned[module]?.id
   switch module{case .microphone:snapshot.microphone=s;case .phoneInternet:snapshot.phoneInternet=s;case .macInternet:snapshot.macInternet=s;default:break}
@@ -445,48 +452,88 @@ private final class AudioDelivery: @unchecked Sendable {
    throw LinkError.failure("CLEANUP_INCOMPLETE","退出清理达到总期限，已保留恢复记录供下次启动恢复")
   }
  }
- private func saveJournal() throws {try FileManager.default.createDirectory(at:journal.deletingLastPathComponent(),withIntermediateDirectories:true);try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:journal.deletingLastPathComponent().path);try JSONEncoder().encode(Array(owned.values)).write(to:journal,options:.atomic);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:journal.path)}
+ private func saveJournal() throws {
+  try FileManager.default.createDirectory(at:journal.deletingLastPathComponent(),withIntermediateDirectories:true)
+  try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:journal.deletingLastPathComponent().path)
+  let sessions=Array(owned.values)+pendingRecovery
+  try JSONEncoder().encode(sessions).write(to:journal,options:.atomic)
+  try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:journal.path)
+ }
+ private func isPhoneOnline(_ serial:String) -> Bool {
+  snapshot.devices.contains(where:{$0.id==serial && $0.state == .online})
+ }
+ private func listedDevice(_ serial:String) -> Device? {snapshot.devices.first(where:{$0.id==serial})}
+ private func phoneCleanupRemains(_ s:OwnedSession) -> Bool {
+  s.controlForward != nil || s.reverse != nil || s.oldUSB != nil || s.ncmRequested == true || s.ncmUSBChanged == true || s.ncmPendingStart != nil || !(s.ncmResults ?? []).isEmpty
+ }
+ private func retainPending(_ session:OwnedSession) {
+  if let index=pendingRecovery.firstIndex(where:{$0.id==session.id}) {pendingRecovery[index]=session}
+  else {pendingRecovery.append(session)}
+ }
+ private func removePending(_ id:String) {
+  pendingRecovery.removeAll{$0.id==id}
+  pendingRecoveryAttemptAt[id]=nil
+ }
+ private func recoveryMessageForPending() -> String {
+  let devices=Set(pendingRecovery.map(\.serial)).count
+  return devices==1 ? "原手机仍有待清理的手机端资源；接回原手机后会继续恢复。" : "\(devices) 部手机仍有待清理的手机端资源；接回对应手机后会继续恢复。"
+ }
  private func recover() async {
   guard FileManager.default.fileExists(atPath:journal.path) else{return}
   let began=ProcessInfo.processInfo.systemUptime
   do {
    let sessions=try JSONDecoder().decode([OwnedSession].self,from:Data(contentsOf:journal))
-   var recovered=[Workspace:OwnedSession]()
+   var ids=Set<String>()
    for session in sessions {
-    guard let module=Workspace(rawValue:session.module),[Workspace.microphone,.phoneInternet,.macInternet].contains(module),recovered[module]==nil else{throw LinkError.failure("JOURNAL_INVALID","恢复记录包含未知或重复任务，保留原记录")}
-    recovered[module]=session
+    guard let module=Workspace(rawValue:session.module),[Workspace.microphone,.phoneInternet,.macInternet].contains(module),ids.insert(session.id).inserted else{throw LinkError.failure("JOURNAL_INVALID","恢复记录包含未知任务或重复会话ID，保留原记录")}
    }
-   owned=recovered
+   owned.removeAll()
+   pendingRecovery=sessions
    activeSessions.removeAll()
    if !sessions.isEmpty {
     log("recovery","started","count=\(sessions.count), modules=[\(sessions.map(\.module).joined(separator:","))]")
    }
-   var errors=[String]()
+   var errors=[String](),deferred=0
    for session in sessions {
     guard !shutdownDeadlineExpired else { break }
     guard let module=Workspace(rawValue:session.module) else{continue}
     let sessionBegan=ProcessInfo.processInfo.systemUptime
     do {
      if quitting { shutdownCleanupAttempted.insert(module) }
-     let warnings=try await cleanup(session)
+     let warnings:[String]
+     if isPhoneOnline(session.serial) {
+      warnings=try await cleanup(session, repairingCompanion:true)
+     } else if listedDevice(session.serial) != nil {
+      throw LinkError.failure("DEVICE_NOT_READY","原手机仍在设备列表中但未授权或离线；保留原记录，等待连接状态恢复")
+     } else {
+      let remaining=try await cleanupMacSide(session)
+      warnings=[]
+      if let remaining {retainPending(remaining);deferred+=1}
+      else {removePending(session.id)}
+      if quitting { shutdownCleanupAttempted.insert(module) }
+      try saveJournal()
+      log(module.rawValue,"recoveryDeferred","session=\(session.id), device=\(deviceAlias(session.serial)), 手机端资源保留原身份等待重连")
+      continue
+     }
      if quitting { shutdownCleanupAttempted.insert(module) }
      guard !shutdownDeadlineExpired else {
       throw LinkError.failure("CLEANUP_INCOMPLETE","退出清理达到总期限，保留恢复记录")
      }
-     owned[module]=nil;try saveJournal();if !warnings.isEmpty {log(module.rawValue,"recoveryWarning","session=\(session.id), warnings=\(warnings.joined(separator:"；"))")}
+     removePending(session.id);try saveJournal();if !warnings.isEmpty {log(module.rawValue,"recoveryWarning","session=\(session.id), warnings=\(warnings.joined(separator:"；"))")}
      log(module.rawValue,"recovered","session=\(session.id), elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime-sessionBegan)*1000)), 上次会话资源已清理；未重新开始任务")
     }catch {
      if quitting { shutdownCleanupAttempted.insert(module) }
-     owned[module]=session
-     activeSessions[module]=nil
+     retainPending(session)
+     if isPhoneOnline(session.serial) {pendingRecoveryAttemptAt[session.id]=ProcessInfo.processInfo.systemUptime}
      errors.append(error.localizedDescription)
      status(module,.failed,"上次资源恢复待重试，请点击全部停止",error.localizedDescription,"CLEANUP_INCOMPLETE")
+     try saveJournal()
     }
    }
    try saveJournal()
    if !sessions.isEmpty {
-    snapshot.recoveryMessage=errors.isEmpty ? "上次会话资源已清理；未恢复录音":"上次资源清理未完成："+errors.joined(separator:"；")
-    log("recovery","completed","elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime-began)*1000)), remaining=[\(owned.keys.map(\.rawValue).sorted().joined(separator:","))], errors=\(errors.count)")
+    snapshot.recoveryMessage=errors.isEmpty ? (pendingRecovery.isEmpty ? "上次会话资源已清理；未恢复录音" : recoveryMessageForPending()) : "上次资源清理未完成："+errors.joined(separator:"；")
+    log("recovery","completed","elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime-began)*1000)), remaining=\(pendingRecovery.count), deferred=\(deferred), errors=\(errors.count)")
    }
   }catch {
    recoveryBlocked=true;snapshot.recoveryMessage="恢复记录读取或保存失败：\(error.localizedDescription)"
@@ -521,15 +568,31 @@ private final class AudioDelivery: @unchecked Sendable {
     snapshot.devices=parsed
     log("devices","updated","source=\(source.rawValue), count=\(parsed.count), list=[\(summary)]")
    }
-   if snapshot.selectedDeviceID==nil,snapshot.devices.count==1 {
-    snapshot.selectedDeviceID=snapshot.devices.first?.id
-    if let autoID=snapshot.selectedDeviceID {
-     log("devices","autoSelected","device=\(deviceAlias(autoID))")
-    }
+   let tracked=Set([snapshot.selectedDeviceID].compactMap{$0}+owned.values.map(\.serial)+pendingRecovery.map(\.serial))
+   let now=ProcessInfo.processInfo.systemUptime
+   for serial in tracked {
+    if parsed.contains(where:{$0.id==serial && $0.state == .online}) {missingDeviceSince[serial]=nil}
+    else if missingDeviceSince[serial]==nil {missingDeviceSince[serial]=now}
+   }
+   let onlineDevices=parsed.filter{$0.state == .online}
+   if snapshot.selectedDeviceID==nil,onlineDevices.count==1,let device=onlineDevices.first {
+    snapshot.selectedDeviceID=device.id
+    log("devices","autoSelected","device=\(deviceAlias(device.id))")
+   } else if let selected=snapshot.selectedDeviceID,
+             listedDevice(selected)?.state != .unauthorized,
+             onlineDevices.count==1,
+             let replacement=onlineDevices.first,
+             !isUSBReenumerating(selected),
+             let missingSince=missingDeviceSince[selected],now-missingSince>=missingDeviceGrace {
+    snapshot.selectedDeviceID=replacement.id
+    revokeMicrophoneIntent("deviceChanged")
+    log("devices","autoSwitched","from=\(deviceAlias(selected)), to=\(deviceAlias(replacement.id)), absentSeconds=\(Int(now-missingSince))")
    }
    lastRefreshErrorText=""
+   await reconcileDeviceSessions()
   }catch{
    if !quitting,!Task.isCancelled {
+    missingDeviceSince.removeAll()
     let errText=error.localizedDescription
     let now=ProcessInfo.processInfo.systemUptime
     if manual || errText != lastRefreshErrorText || now-lastRefreshErrorAt>=30 {
@@ -538,6 +601,110 @@ private final class AudioDelivery: @unchecked Sendable {
      log("devices","failed","source=\(source.rawValue), error=\(errText)")
     }
    }
+  }
+ }
+ private func isConfirmedMissing(_ serial:String) -> Bool {
+  guard !serial.isEmpty,let since=missingDeviceSince[serial] else{return false}
+  if let state=listedDevice(serial)?.state,state == .online || state == .unauthorized {return false}
+  return ProcessInfo.processInfo.systemUptime-since>=missingDeviceGrace
+ }
+ private func isUSBReenumerating(_ serial:String) -> Bool {
+  guard let session=owned[.phoneInternet],session.serial==serial else{return false}
+  return ncmUSBChange?.id==session.id || (jobs[.phoneInternet] != nil && snapshot.phoneInternet.phase != .running)
+ }
+ private func stopSessions(for serial:String?,source:ActionSource) async {
+  guard let serial,!serial.isEmpty else{return}
+  for module in [Workspace.microphone,.phoneInternet,.macInternet] {
+   guard owned[module]?.serial==serial else{continue}
+   await stop(module,source:source)
+  }
+ }
+ private func cancelDeferredStarts(module requestedModule:Workspace?=nil,for serial:String?=nil) {
+  let modules=deferredStartTargets.compactMap {module,target in
+   (requestedModule==nil || requestedModule==module) && (serial==nil || serial==target) ? module:nil
+  }
+  for module in modules {
+   guard let id=jobIDs[module],deferredStartTargets[module] != nil else{continue}
+   jobs[module]?.cancel()
+   jobs[module]=nil
+   jobIDs[module]=nil
+   let target=deferredStartTargets[module]
+   deferredStartTargets[module]=nil
+   log(module.rawValue,"deferredStartCancelled","startID=\(id), device=\(deferredDeviceAlias(serial:serial,target:target)), selection or stop changed during recovery")
+  }
+ }
+ private func deferredDeviceAlias(serial:String?,target:String?)->String {
+  if let serial{return deviceAlias(serial)}
+  if let target{return deviceAlias(target)}
+  return "all"
+ }
+ private func deferredStartIsCurrent(_ module:Workspace,_ serial:String,_ id:String)->Bool {
+  deferredStartTargets[module]==serial && jobIDs[module]==id && snapshot.selectedDeviceID==serial &&
+   !Task.isCancelled && !quitting && !snapshot.isSavingSettings && !recovering && !recoveryBlocked &&
+   !stopping.contains(module) && owned[module]==nil
+ }
+ private func resumeAfterPendingRecovery(_ module:Workspace,serial:String,id:String) async {
+  defer {
+   if deferredStartTargets[module]==serial,jobIDs[module]==id {
+    deferredStartTargets[module]=nil
+    jobs[module]=nil
+    jobIDs[module]=nil
+   }
+  }
+  let records=pendingRecovery.filter{$0.serial==serial}
+  for record in records {
+   guard deferredStartIsCurrent(module,serial,id) else{return}
+   await retryPendingSession(record,force:true)
+  }
+  guard deferredStartIsCurrent(module,serial,id) else{return}
+  guard !pendingRecovery.contains(where:{$0.serial==serial}) else{
+   status(module,.failed,"历史资源恢复未完成","原手机的历史会话仍未清理，已保留恢复记录，请稍后重试","CLEANUP_INCOMPLETE")
+   return
+  }
+  deferredStartTargets[module]=nil
+  jobs[module]=nil
+  jobIDs[module]=nil
+  start(module)
+ }
+ private func canRetryPending(_ session:OwnedSession) -> Bool {
+  guard isPhoneOnline(session.serial),let module=Workspace(rawValue:session.module),owned[module]==nil,
+        jobs[module]==nil || deferredStartTargets[module]==session.serial,!stopping.contains(module) else{return false}
+  if owned.values.contains(where:{$0.serial==session.serial}) {return false}
+  let phoneJobBusy=jobs[.phoneInternet] != nil && deferredStartTargets[.phoneInternet] != session.serial
+  let macJobBusy=jobs[.macInternet] != nil && deferredStartTargets[.macInternet] != session.serial
+  let networkBusy=owned[.phoneInternet] != nil || owned[.macInternet] != nil || phoneJobBusy || macJobBusy || stopping.contains(.phoneInternet) || stopping.contains(.macInternet)
+  if session.module==Workspace.phoneInternet.rawValue || session.module==Workspace.macInternet.rawValue {
+   return !networkBusy
+  }
+  if networkBusy {return false}
+  return !owned.values.contains(where:{$0.serial==session.serial})
+ }
+ private func retryPendingSession(_ session:OwnedSession,force:Bool=false) async {
+  guard pendingRecovery.contains(where:{$0.id==session.id}),!pendingRecoveryInProgress.contains(session.id),canRetryPending(session) else{return}
+  let now=ProcessInfo.processInfo.systemUptime
+  guard force || now-(pendingRecoveryAttemptAt[session.id] ?? -.infinity)>=15 else{return}
+  pendingRecoveryInProgress.insert(session.id)
+  defer {pendingRecoveryInProgress.remove(session.id)}
+  pendingRecoveryAttemptAt[session.id]=now
+  do {
+   let warnings=try await cleanup(session,repairingCompanion:true)
+   removePending(session.id)
+   try saveJournal()
+   if !warnings.isEmpty {log(session.module,"recoveryWarning","session=\(session.id), warnings=\(warnings.joined(separator:"；"))")}
+   log(session.module,"recovered","session=\(session.id), device=\(deviceAlias(session.serial)), 原手机已重连并完成待处理清理")
+   snapshot.recoveryMessage=pendingRecovery.isEmpty ? "原手机资源已清理" : recoveryMessageForPending()
+  }catch {
+   log(session.module,"recoveryRetryPending","session=\(session.id), error=\(error.localizedDescription)")
+  }
+ }
+ private func reconcileDeviceSessions() async {
+  guard !recovering,!quitting,!Task.isCancelled else{return}
+  for module in [Workspace.microphone,.phoneInternet,.macInternet] {
+   guard let session=owned[module],isConfirmedMissing(session.serial),jobs[module]==nil,stopJobs[module]==nil,!stopping.contains(module),ncmUSBChange?.id != session.id else{continue}
+   await stop(module,source:.system)
+  }
+  for session in pendingRecovery {
+   await retryPendingSession(session)
   }
  }
  private var usbNetworkTransition:Bool {
@@ -549,13 +716,27 @@ private final class AudioDelivery: @unchecked Sendable {
    log(module.rawValue,"startIgnored","hasJob=\(jobs[module] != nil), hasOwned=\(owned[module] != nil), stopping=\(stopping.contains(module)), saving=\(snapshot.isSavingSettings), recovering=\(recovering), blocked=\(recoveryBlocked)")
    return
   }
+  let targetSerial=snapshot.selectedDeviceID ?? ""
+  if module != .microphone || snapshot.settings.transport == .usb,
+     let pending=pendingRecovery.first(where:{$0.serial==targetSerial}) {
+   let startID=UUID().uuidString
+   jobIDs[module]=startID
+   deferredStartTargets[module]=targetSerial
+   log(module.rawValue,"startDeferredRecovery","device=\(deviceAlias(targetSerial)), session=\(pending.id), 等待该手机的历史资源恢复")
+   jobs[module]=ProcessRunner.$currentGroup.withValue(processGroup) {
+    Task {await resumeAfterPendingRecovery(module,serial:targetSerial,id:startID)}
+   }
+   return
+  }
   let jobID=UUID().uuidString;jobIDs[module]=jobID
+  let selectedSerial=snapshot.selectedDeviceID
   jobs[module]=ProcessRunner.$currentGroup.withValue(processGroup) {
-   Task{guard !Task.isCancelled,jobIDs[module]==jobID else{return};await execute(module);if jobIDs[module]==jobID {jobs[module]=nil;jobIDs[module]=nil}}
+   Task{guard !Task.isCancelled,jobIDs[module]==jobID else{return};await execute(module,expectedSerial:selectedSerial,verifySelection:true);if jobIDs[module]==jobID {jobs[module]=nil;jobIDs[module]=nil}}
   }
  }
- private func execute(_ module:Workspace) async {
-  guard !Task.isCancelled,!quitting,!snapshot.isSavingSettings,owned[module]==nil,!stopping.contains(module) else{return}
+ private func execute(_ module:Workspace,expectedSerial:String?=nil,verifySelection:Bool=false) async {
+  guard !Task.isCancelled,!quitting,!snapshot.isSavingSettings,owned[module]==nil,!stopping.contains(module),
+        !verifySelection || snapshot.selectedDeviceID==expectedSerial else{return}
   let executionIntent=microphoneIntent
   let began=ProcessInfo.processInfo.systemUptime
   let grant=module == .microphone ? autoGrant : nil
@@ -563,7 +744,7 @@ private final class AudioDelivery: @unchecked Sendable {
   let settings=module == .microphone ? microphoneSettings() : snapshot.settings
   let token=UUID().uuidString.replacingOccurrences(of:"-",with:"").lowercased()
   let sessionToken=grant?.token ?? ((module == .microphone && settings.transport == .wifi) ? settings.pairingCode : token)
-  let serial=grant != nil ? "" : (snapshot.selectedDeviceID ?? "")
+  let serial=grant != nil ? "" : (verifySelection ? (expectedSerial ?? "") : (snapshot.selectedDeviceID ?? ""))
   if module == .microphone {
    audioWatchdog.begin(id);snapshot.receivedFrames=0;snapshot.effectiveAudio=nil;audioPacketCount=0;lastSnapshotTelemetryAt=0;phoneSilenced=nil;phoneAudioDiagnostics="unknown";audioControlFailures=0;audioMetricsAt=ProcessInfo.processInfo.systemUptime;audioPollAt=0;lastRenderCallbacks=0;renderProgressAt=ProcessInfo.processInfo.systemUptime;outputRestartCount=0;audioAnomalyAt=0;lastDroppedFrames=0;lastBacklogFrames=0
    snapshot.level=0;snapshot.waveform=[];snapshot.audioState = .disconnected;telemetry.reset()
@@ -615,13 +796,7 @@ private final class AudioDelivery: @unchecked Sendable {
    compatible=Self.compatibleCompanion(capability)
   }
   if !compatible {
-   let apk=root.appendingPathComponent("companion.apk");let checksum=root.appendingPathComponent("companion.sha256")
-   guard FileManager.default.fileExists(atPath:apk.path),FileManager.default.fileExists(atPath:checksum.path) else{throw LinkError.failure("APK_MISSING","安装包内缺少配套APK或指纹；重新获取完整发行包")}
-   let expected=try String(contentsOf:checksum,encoding:.utf8).trimmingCharacters(in:.whitespacesAndNewlines)
-   let actual=SHA256.hash(data:try Data(contentsOf:apk)).map{String(format:"%02x",$0)}.joined()
-   guard actual==expected else{throw LinkError.failure("APK_HASH_MISMATCH","配套APK校验失败，未安装")}
-   status(module,.preparing,"安装配套App","如手机要求确认安装，请在手机操作；不会自动卸载已有App")
-   _ = try await adb.run(serial,["install","-r",apk.path],timeout:180,cancellable:true)
+   try await installCompanion(module,serial,phase:.preparing)
    guard valid(module,id) else{throw CancellationError()}
    let installed=try await adb.run(serial,["shell","pm","list","packages","com.zjx.usblinkmic"])
    guard installed.contains("package:com.zjx.usblinkmic") else{throw LinkError.failure("INSTALL_NOT_CONFIRMED","未能复查配套App安装")}
@@ -629,6 +804,19 @@ private final class AudioDelivery: @unchecked Sendable {
   let capability=try await adb.run(serial,["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"])
   guard Self.compatibleCompanion(capability) else{throw LinkError.failure("APP_INCOMPATIBLE","配套App未报告所需协议与运行时能力；未强行降级或卸载数据")}
 
+ }
+ private func installCompanion(_ module:Workspace,_ serial:String,phase:TaskPhase) async throws {
+  let apk=root.appendingPathComponent("companion.apk")
+  let checksum=root.appendingPathComponent("companion.sha256")
+  guard FileManager.default.fileExists(atPath:apk.path),FileManager.default.fileExists(atPath:checksum.path) else{throw LinkError.failure("APK_MISSING","安装包内缺少配套APK或指纹；重新获取完整发行包")}
+  let expected=try String(contentsOf:checksum,encoding:.utf8).trimmingCharacters(in:.whitespacesAndNewlines)
+  let actual=SHA256.hash(data:try Data(contentsOf:apk)).map{String(format:"%02x",$0)}.joined()
+  guard actual==expected else{throw LinkError.failure("APK_HASH_MISMATCH","配套APK校验失败，未安装")}
+  try Task.checkCancellation()
+  try checkCleanupAllowed()
+  guard !quitting else{throw CancellationError()}
+  status(module,phase,"安装配套App","如手机要求确认安装，请在手机操作；不会自动卸载已有App")
+  _ = try await adb.run(serial,["install","-r",apk.path],timeout:180,cancellable:true)
  }
  private static func compatibleCompanion(_ text:String) -> Bool {
   guard text.range(of:#"protocol=4(?:[,}\s])"#,options:.regularExpression) != nil,
@@ -1054,11 +1242,11 @@ private final class AudioDelivery: @unchecked Sendable {
   if borrowedSharing {log("phoneInternet","existingSharingBorrowed","保留系统已开启的usb0共享；仅使用本手机USB出口，不重新申请或停止原共享")}
   guard valid(.phoneInternet,id) else{throw CancellationError()}
   let alreadyNCM=NCMDriver.functions(functions).contains("ncm")
-  if !alreadyNCM,owned[.microphone] != nil,snapshot.settings.transport == .usb {
+  if !alreadyNCM,let microphone=owned[.microphone],microphone.serial==serial,snapshot.settings.transport == .usb {
    deferredNetworkResume=microphoneIntent
    audioRecovery?.cancel();audioRecovery=nil;audioRecoveryID=nil
    await stop(.microphone)
-   guard owned[.microphone]==nil else{throw LinkError.failure("AUDIO_CLEANUP_PENDING","USB重枚举前请先完成音频停止")}
+   guard owned[.microphone]?.id != microphone.id else{throw LinkError.failure("AUDIO_CLEANUP_PENDING","USB重枚举前请先完成音频停止")}
    log("audio","usbReenumeration","USB共享切换需要重新识别；保留本次录音意图，网络准备后尝试恢复")
   }
   guard valid(.phoneInternet,id) else{throw CancellationError()}
@@ -1203,13 +1391,13 @@ private final class AudioDelivery: @unchecked Sendable {
    }
   }
  }
- private func cleanup(_ s:OwnedSession) async throws -> [String] {
+ private func cleanup(_ s:OwnedSession, repairingCompanion:Bool) async throws -> [String] {
   try checkCleanupAllowed()
   var failures=[String](),warnings=[String]()
   var cancellationAcknowledged=s.controlForward==nil
   if s.controlForward != nil {
    status(Workspace(rawValue:s.module) ?? .devices,.stopping,"取消手机任务","先停止本次任务，再恢复USB和网络服务")
-   do{try await cancelPhone(s);cancellationAcknowledged=true}catch{failures.append(error.localizedDescription)}
+   do{try await cancelPhone(s, repairingCompanion:repairingCompanion);cancellationAcknowledged=true}catch{failures.append(error.localizedDescription)}
   }
   try checkCleanupAllowed()
   if s.ncmBorrowed==true {log("phoneInternet","existingSharingPreserved","本次没有申请原usb0共享，停止不会关闭系统原共享")}
@@ -1328,7 +1516,44 @@ private final class AudioDelivery: @unchecked Sendable {
   if !failures.isEmpty {throw LinkError.failure("CLEANUP_INCOMPLETE",failures.joined(separator:"；"))}
   return warnings
  }
- private func cancelPhone(_ s:OwnedSession) async throws {
+ private func cleanupMacSide(_ s:OwnedSession) async throws -> OwnedSession? {
+  try checkCleanupAllowed()
+  var remaining=s
+  if let change=ncmServiceChange,change.id==s.id {
+   _ = try? await change.task.value
+   if ncmServiceChange?.id==s.id {ncmServiceChange=nil}
+  }
+  guard ncmUSBChange?.id != s.id else{throw LinkError.failure("NCM_START_PENDING","USB重枚举仍在进行，保留原会话记录")}
+  for receipt in (s.ncmServices ?? []).reversed() {
+   try checkCleanupAllowed()
+   try await ncmServices().restore(receipt)
+   remaining.ncmServices=(remaining.ncmServices ?? []).filter{$0.name != receipt.name || $0.device != receipt.device}
+  }
+  if remaining.ncmServices?.isEmpty == true {remaining.ncmServices=nil}
+  try checkCleanupAllowed()
+  if let pid=s.relayPID,let executable=s.relayExecutable {
+   let process=try await ProcessRunner.run(URL(fileURLWithPath:"/bin/ps"),["-p",String(pid),"-o","command="],timeout:2,cancellable:quitting)
+   if process.code==0 {
+    guard process.output.contains(executable),process.output.contains("-DUSBLinkMic.session=\(s.id)") else{throw LinkError.failure("PROCESS_OWNERSHIP_CHANGED","原PID已被其他进程使用，未终止")}
+    kill(pid,SIGTERM)
+    try? await Task.sleep(nanoseconds:300_000_000)
+    let remaining=try await ProcessRunner.run(URL(fileURLWithPath:"/bin/ps"),["-p",String(pid),"-o","command="],timeout:2,cancellable:quitting)
+    if remaining.code==0,remaining.output.contains(executable),remaining.output.contains("-DUSBLinkMic.session=\(s.id)"){kill(pid,SIGKILL)}
+   }
+   remaining.relayPID=nil;remaining.relayExecutable=nil
+  }
+  try checkCleanupAllowed()
+  if let port=s.controlForward,let target=s.controlTarget {
+   let local="tcp:\(port)"
+   let mappings=try await adb.run(nil,["forward","--list"],timeout:3,cancellable:quitting)
+   if ADB.ownsMapping(mappings,serial:s.serial,local:local,remote:"tcp:\(target)") {
+    try checkCleanupAllowed()
+    _ = try await adb.run(nil,["forward","--remove",local],timeout:3,cancellable:quitting)
+   }
+  }
+  return phoneCleanupRemains(remaining) ? remaining:nil
+ }
+ private func cancelPhone(_ s:OwnedSession, repairingCompanion:Bool) async throws {
   try checkCleanupAllowed()
   guard let port=s.controlForward,let target=s.controlTarget,(1...65535).contains(port),(1...65535).contains(target) else{throw LinkError.failure("CONTROL_FORWARD","取消回执缺少有效控制端口")}
   let mappings=try await adb.run(nil,["forward","--list"],timeout:3,cancellable:quitting)
@@ -1349,13 +1574,26 @@ private final class AudioDelivery: @unchecked Sendable {
   catch {log(s.module,"cancelControlPending",error.localizedDescription)}
   try checkCleanupAllowed()
   if !accepted {
-  let capabilities=try await adb.run(s.serial,["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"],timeout:3,cancellable:quitting)
-  try checkCleanupAllowed()
-  let component=Self.compatibleCompanion(capabilities) ? Capabilities.androidControlComponent:(s.controlComponent ?? Capabilities.legacyAndroidControlComponent)
-  let launch=try await adb.run(s.serial,["shell","am","start","-f","0x18000000","-n",component,"--es","mode","cancel","--es","session",s.id,"--es","token",s.token,"--ei","controlPort",String(target)],timeout:4,cancellable:quitting)
-  try checkCleanupAllowed()
-  log(s.module,"phoneCancelLaunch",launch)
-  guard launch.range(of:#"Error:|Error type|SecurityException|Permission Denial|Exception occurred"#,options:[.regularExpression,.caseInsensitive])==nil else{throw LinkError.failure("CONTROL_CANCEL_REJECTED",launch)}
+   let capabilityCommand=["shell","content","call","--uri","content://com.zjx.usblinkmic.capabilities","--method","capabilities"]
+   var reinstalled=false
+   if repairingCompanion,!quitting,let module=Workspace(rawValue:s.module) {
+    let packages=try await adb.run(s.serial,["shell","pm","list","packages","com.zjx.usblinkmic"],timeout:4)
+    if !packages.split(separator:"\n").contains("package:com.zjx.usblinkmic") {
+     log(s.module,"recoveryCompanionMissing","恢复记录对应的手机缺少配套App，安装后继续清理")
+     try await installCompanion(module,s.serial,phase:.stopping)
+     reinstalled=true
+    }
+   }
+   try checkCleanupAllowed()
+   let capabilities=try await adb.run(s.serial,capabilityCommand,timeout:3,cancellable:quitting)
+   try checkCleanupAllowed()
+   let compatible=Self.compatibleCompanion(capabilities)
+   guard !reinstalled || compatible else{throw LinkError.failure("APP_INCOMPATIBLE","配套App未报告恢复会话所需的协议与能力")}
+   let component=compatible ? Capabilities.androidControlComponent:(s.controlComponent ?? Capabilities.legacyAndroidControlComponent)
+   let launch=try await adb.run(s.serial,["shell","am","start","-f","0x18000000","-n",component,"--es","mode","cancel","--es","session",s.id,"--es","token",s.token,"--ei","controlPort",String(target)],timeout:4,cancellable:quitting)
+   try checkCleanupAllowed()
+   log(s.module,"phoneCancelLaunch",launch)
+   guard launch.range(of:#"Error:|Error type|SecurityException|Permission Denial|Exception occurred"#,options:[.regularExpression,.caseInsensitive])==nil else{throw LinkError.failure("CONTROL_CANCEL_REJECTED",launch)}
   }
   let deadline=ProcessInfo.processInfo.systemUptime+8
   repeat {
@@ -1375,6 +1613,7 @@ private final class AudioDelivery: @unchecked Sendable {
   if recovering,let recovery=recoveryJob {await recovery.value}
   guard !shutdownDeadlineExpired else{return}
   if let job=stopJobs[module] {await job.value;return}
+  cancelDeferredStarts(module:module)
   jobs[module]?.cancel();jobs[module]=nil;jobIDs[module]=nil
   if module == .microphone, let grant = autoGrant {
    let grantSession = grant.sessionID
@@ -1382,6 +1621,9 @@ private final class AudioDelivery: @unchecked Sendable {
    wifiService?.sessionEndedByHost(sessionID: grantSession, reason: source == .phone ? "phoneRequested" : "macStopped")
   }
   guard let session=owned[module] else{
+   if let serial=snapshot.selectedDeviceID,let pending=pendingRecovery.first(where:{$0.module==module.rawValue && $0.serial==serial}) {
+    await retryPendingSession(pending,force:true)
+   }
    if module == .microphone {
     receiver.stop(); output.stop(); audioDelivery = nil
     status(.microphone, .stopped, "已停止拾音", "")
@@ -1420,23 +1662,56 @@ private final class AudioDelivery: @unchecked Sendable {
   }
   if module == .phoneInternet {
    ncmMonitor?.cancel();ncmMonitor=nil;ncmInterface=nil;snapshot.networkState = .stopped
-   if session.oldUSB != nil,owned[.microphone] != nil,snapshot.settings.transport == .usb {deferredNetworkResume=microphoneIntent;audioRecovery?.cancel();audioRecovery=nil;audioRecoveryID=nil;await stop(.microphone,source:source)}
+   if session.oldUSB != nil,let microphone=owned[.microphone],microphone.serial==session.serial,snapshot.settings.transport == .usb {deferredNetworkResume=microphoneIntent;audioRecovery?.cancel();audioRecovery=nil;audioRecoveryID=nil;await stop(.microphone,source:source)}
   }
   if module == .macInternet {relay?.terminationHandler=nil;if relay?.isRunning==true {relay?.terminate()};relay=nil;snapshot.networkState = .stopped}
   if module == .microphone,let forwarding=audioForwardChange,forwarding.id==session.id {_ = try? await forwarding.task.value;if audioForwardChange?.id==session.id {audioForwardChange=nil}}
   do {
    try checkCleanupAllowed()
-   if module == .phoneInternet,session.oldUSB != nil,snapshot.settings.transport == .usb,owned[.microphone] != nil {throw LinkError.failure("AUDIO_CLEANUP_PENDING","麦克风停止尚未确认，保留USB模式与网络恢复记录，请重试停止")}
+   if module == .phoneInternet,session.oldUSB != nil,snapshot.settings.transport == .usb,owned[.microphone]?.serial==session.serial {throw LinkError.failure("AUDIO_CLEANUP_PENDING","麦克风停止尚未确认，保留USB模式与网络恢复记录，请重试停止")}
    if !recoveryBlocked {try saveJournal()}
-   let warnings=try await cleanup(session)
+   if isConfirmedMissing(session.serial),ncmUSBChange?.id != session.id {
+    let remaining:OwnedSession?
+    do {remaining=try await cleanupMacSide(session)}
+    catch {
+     guard !shutdownDeadlineExpired,!processGroup.isCancelled else{throw error}
+     owned[module]=nil
+     activeSessions[module]=nil
+     retainPending(session)
+     do {try saveJournal()} catch {
+      removePending(session.id)
+      owned[module]=session
+      throw error
+     }
+     log(module.rawValue,"offlineMacCleanupPending","session=\(session.id), device=\(deviceAlias(session.serial)), error=\(error.localizedDescription)")
+     status(module,.failed,"Mac侧清理待重试","供网任务已释放，原手机资源会在重连后继续清理：\(error.localizedDescription)","RECOVERY_PENDING")
+     return
+    }
+    try checkCleanupAllowed()
+    owned[module]=nil
+    if let remaining {retainPending(remaining)}
+    do {if !recoveryBlocked {try saveJournal()}} catch {
+     removePending(session.id);owned[module]=session
+     throw error
+    }
+    let detail=remaining == nil ? "Mac侧资源已清理" : "Mac侧资源已清理；手机端资源等待原手机重连"
+    log(module.rawValue,"offlineCleanupDeferred","session=\(session.id), device=\(deviceAlias(session.serial)), pending=\(remaining != nil)")
+    status(module,.stopped,remaining == nil ? "已停止" : "等待原手机重连",detail)
+    return
+   }
+   let warnings=try await cleanup(session, repairingCompanion:!wasActive)
    try checkCleanupAllowed()
    owned[module]=nil
    activeSessions[module]=nil
    if !recoveryBlocked {try saveJournal()}
+   if owned.isEmpty,snapshot.recoveryMessage.hasPrefix("上次资源清理未完成：") {
+    snapshot.recoveryMessage="上次会话资源已清理"
+   }
    let stoppedMsg = (module == .microphone && source == .phone) ? "手机已停止录音" : "已停止"
    status(module,.stopped,stoppedMsg,warnings.joined(separator:"；"))
    if module == .phoneInternet {resumeMicrophoneAfterNetwork()}
   } catch {
+   removePending(session.id)
    owned[module]=session
    activeSessions[module]=nil
    if !recoveryBlocked {
@@ -1459,6 +1734,7 @@ private final class AudioDelivery: @unchecked Sendable {
   for module in [Workspace.microphone,.phoneInternet,.macInternet] {
    await stop(module,source:source)
   }
+  for session in pendingRecovery {await retryPendingSession(session,force:true)}
  }
  public func shutdown(timeout:TimeInterval=8) async -> Bool {
   if let existing=shutdownTask {return await existing.value}
