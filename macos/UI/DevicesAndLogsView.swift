@@ -10,15 +10,12 @@ struct DevicesWorkspaceView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                ZenWorkspaceHeroHeader(
-                    eyebrow: "硬件与授权",
-                    title: snapshot.devices.isEmpty
-                        ? "等待 Android 手机连接"
-                        : "已识别 \(snapshot.devices.count) 台 Android 手机",
+            VStack(alignment: .leading, spacing: 16) {
+                WorkspaceHeading(
+                    title: "设备与权限",
                     subtitle: snapshot.devices.isEmpty
-                        ? "请通过 USB 数据线连接 Android 手机，并在手机弹窗中点击「允许 USB 调试」。"
-                        : "已通过 USB 有线通道建立控制总线，设备与权限状态实时同步。"
+                        ? "查看 USB 调试状态、已绑定的 Wi-Fi 手机和手机权限。"
+                        : "已识别 \(snapshot.devices.count) 台 USB 设备。可在此管理 Wi-Fi 绑定和手机权限。"
                 )
 
                 deviceCardSection
@@ -29,10 +26,7 @@ struct DevicesWorkspaceView: View {
 
                 adbHealthSection
             }
-            .frame(maxWidth: 816, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 40)
-            .padding(.vertical, 28)
+            .workspaceMargins()
         }
     }
 
@@ -388,14 +382,13 @@ struct LogsWorkspaceView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
+            WorkspaceHeading(title: "诊断日志", subtitle: "查看连接事件、权限提示和错误记录。")
             filterToolbarCard
             logTableCard
         }
-        .frame(maxWidth: 816, maxHeight: .infinity, alignment: .topLeading)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.horizontal, 40)
-        .padding(.vertical, 24)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .workspaceMargins()
     }
 
     // MARK: - Filter Toolbar Card

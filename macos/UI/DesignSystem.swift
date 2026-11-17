@@ -33,15 +33,6 @@ public enum SidebarSection: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    public var subtitle: String {
-        switch self {
-        case .microphone: "作为 Mac 的低延迟音频输入"
-        case .network: "USB NCM 手机供网 · ADB 隧道 Mac 反向供网"
-        case .devices: "管理连接的 Android 设备与端到端授权"
-        case .logs: "系统控制台实时输出与排障记录"
-        }
-    }
-
     /// Workspace still names the runtime tasks that start/stop, not the pages.
     /// Mapping keeps the two in sync without a second source of truth.
     public init(workspace: Workspace) {
@@ -234,7 +225,7 @@ public extension RecordingSource {
     }
 }
 
-// MARK: - Section 10 "静如止水，动如雷霆" Color Palette
+// MARK: - Colors
 
 public struct ZenPalette {
     public let colorScheme: ColorScheme
@@ -245,88 +236,44 @@ public struct ZenPalette {
 
     public var isDark: Bool { colorScheme == .dark }
 
-    /// #F7F8FA (Light) / #0D1117 (Dark)
     public var windowBackground: Color {
-        isDark
-            ? Color(red: 0x0D / 255.0, green: 0x11 / 255.0, blue: 0x17 / 255.0)
-            : Color(red: 0xF7 / 255.0, green: 0xF8 / 255.0, blue: 0xFA / 255.0)
+        Color(nsColor: .windowBackgroundColor)
     }
 
-    /// #F0F2F5 (Light) / #131822 (Dark)
-    public var sidebarBackground: Color {
-        isDark
-            ? Color(red: 0x13 / 255.0, green: 0x18 / 255.0, blue: 0x22 / 255.0)
-            : Color(red: 0xF0 / 255.0, green: 0xF2 / 255.0, blue: 0xF5 / 255.0)
-    }
-
-    /// #E4E7EB (Light) / #21283B (Dark)
-    public var sidebarSelectedFill: Color {
-        isDark
-            ? Color(red: 0x21 / 255.0, green: 0x28 / 255.0, blue: 0x3B / 255.0)
-            : Color(red: 0xE4 / 255.0, green: 0xE7 / 255.0, blue: 0xEB / 255.0)
-    }
-
-    /// #FFFFFF (Light) / #181E2B (Dark)
     public var cardBackground: Color {
-        isDark
-            ? Color(red: 0x18 / 255.0, green: 0x1E / 255.0, blue: 0x2B / 255.0)
-            : Color.white
+        Color(nsColor: .controlBackgroundColor)
     }
 
-    /// #E2E8F0 (Light) / #21283B (Dark)
     public var border: Color {
-        isDark
-            ? Color(red: 0x21 / 255.0, green: 0x28 / 255.0, blue: 0x3B / 255.0)
-            : Color(red: 0xE2 / 255.0, green: 0xE8 / 255.0, blue: 0xF0 / 255.0)
+        .primary.opacity(0.10)
     }
 
-    /// #E2E8F0 (Light) / subtle white line (Dark)
     public var divider: Color {
-        isDark
-            ? Color.white.opacity(0.08)
-            : Color(red: 0xE2 / 255.0, green: 0xE8 / 255.0, blue: 0xF0 / 255.0)
+        Color(nsColor: .separatorColor)
     }
 
-    /// #0071E3 (Light) / #388BFD (Dark)
     public var activeBorder: Color {
-        isDark
-            ? Color(red: 0x38 / 255.0, green: 0x8B / 255.0, blue: 0xFD / 255.0)
-            : Color(red: 0x00 / 255.0, green: 0x71 / 255.0, blue: 0xE3 / 255.0)
+        accentBlue.opacity(0.55)
     }
 
-    /// #F4F7FC (Light) / #0B111A (Dark)
     public var recessedWell: Color {
-        isDark
-            ? Color(red: 0x0B / 255.0, green: 0x11 / 255.0, blue: 0x1A / 255.0)
-            : Color(red: 0xF4 / 255.0, green: 0xF7 / 255.0, blue: 0xFC / 255.0)
+        .black.opacity(isDark ? 0.22 : 0.05)
     }
 
-    /// #F1F3F5 (Light) / #21283B (Dark)
     public var segmentedTrack: Color {
-        isDark
-            ? Color(red: 0x21 / 255.0, green: 0x28 / 255.0, blue: 0x3B / 255.0)
-            : Color(red: 0xF1 / 255.0, green: 0xF3 / 255.0, blue: 0xF5 / 255.0)
+        .primary.opacity(0.08)
     }
 
-    /// #1D1D1F (Light) / #FFFFFF (Dark)
     public var textPrimary: Color {
-        isDark
-            ? Color.white
-            : Color(red: 0x1D / 255.0, green: 0x1D / 255.0, blue: 0x1F / 255.0)
+        .primary
     }
 
-    /// #6E6E73 (Light) / #8B949E (Dark)
     public var textSecondary: Color {
-        isDark
-            ? Color(red: 0x8B / 255.0, green: 0x94 / 255.0, blue: 0x9E / 255.0)
-            : Color(red: 0x6E / 255.0, green: 0x6E / 255.0, blue: 0x73 / 255.0)
+        .secondary
     }
 
-    /// #A1A1A6 (Light) / #6E7681 (Dark)
     public var textTertiary: Color {
-        isDark
-            ? Color(red: 0x6E / 255.0, green: 0x76 / 255.0, blue: 0x81 / 255.0)
-            : Color(red: 0xA1 / 255.0, green: 0xA1 / 255.0, blue: 0xA6 / 255.0)
+        .secondary
     }
 
     /// #0071E3 (Light) / #388BFD (Dark)
@@ -367,17 +314,12 @@ private struct ZenCardModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let palette = ZenPalette(colorScheme)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(palette.cardBackground)
-            )
+            .background(.regularMaterial, in: shape)
             .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        isActive ? palette.activeBorder : palette.border,
-                        lineWidth: isActive ? 1.25 : 1.0
-                    )
+                shape.strokeBorder(isActive ? palette.activeBorder : palette.border, lineWidth: 1)
+                    .allowsHitTesting(false)
             }
     }
 }
@@ -387,43 +329,33 @@ public extension View {
         modifier(ZenCardModifier(isActive: isActive, cornerRadius: cornerRadius))
     }
 
-    func heroGlassSurface(tint: Color = .accentColor, cornerRadius: CGFloat = 20) -> some View {
-        modifier(ZenCardModifier(isActive: false, cornerRadius: cornerRadius))
-    }
-
     func insetGroupSurface(cornerRadius: CGFloat = 18) -> some View {
         modifier(ZenCardModifier(isActive: false, cornerRadius: cornerRadius))
     }
 }
 
-// MARK: - Section 10 Hero Typography Header
-
-public struct ZenWorkspaceHeroHeader: View {
-    @Environment(\.colorScheme) private var colorScheme
-    public let eyebrow: String
-    public let title: String
-    public let subtitle: String
-
-    public init(eyebrow: String, title: String, subtitle: String) {
-        self.eyebrow = eyebrow
-        self.title = title
-        self.subtitle = subtitle
+extension View {
+    func workspaceMargins() -> some View {
+        frame(maxWidth: 820, alignment: .topLeading)
+            .padding(.horizontal, 30)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, alignment: .top)
     }
+}
 
-    public var body: some View {
-        let palette = ZenPalette(colorScheme)
-        VStack(alignment: .leading, spacing: 6) {
-            Text(eyebrow)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(palette.textSecondary)
+struct WorkspaceHeading: View {
+    let title: String
+    let subtitle: String
 
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title)
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(palette.textPrimary)
+                .font(.system(size: 30, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
 
             Text(subtitle)
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(palette.textSecondary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -494,68 +426,30 @@ public struct LineArtPhoneIcon: View {
     }
 }
 
-// MARK: - Primary Capsule Action Button (Start Blue / Stop Crimson)
+// MARK: - Start and stop controls
 
-public struct ZenCapsuleActionButton: View {
+struct SessionActionButton: View {
     @Environment(\.colorScheme) private var colorScheme
-    public let title: String
-    public let isStop: Bool
-    public var width: CGFloat = 144
-    public var height: CGFloat = 48
-    public var isDisabled: Bool = false
-    public let action: () -> Void
+    let title: String
+    let isStop: Bool
+    var controlSize: ControlSize = .large
+    var isDisabled: Bool = false
+    let action: () -> Void
 
-    public init(
-        title: String,
-        isStop: Bool,
-        width: CGFloat = 144,
-        height: CGFloat = 48,
-        isDisabled: Bool = false,
-        action: @escaping () -> Void
-    ) {
-        self.title = title
-        self.isStop = isStop
-        self.width = width
-        self.height = height
-        self.isDisabled = isDisabled
-        self.action = action
-    }
-
-    public var body: some View {
-        let palette = ZenPalette(colorScheme)
-        let bgColor = isStop ? palette.stopCrimson : Color(red: 0x00 / 255.0, green: 0x71 / 255.0, blue: 0xE3 / 255.0)
-
+    var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-
-                if isStop {
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(Color.white)
-                        .frame(width: 9, height: 9)
-                } else {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.white.opacity(0.24))
-                            .frame(width: 16, height: 16)
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                }
-            }
-            .frame(width: width, height: height)
-            .background(bgColor.opacity(isDisabled ? 0.5 : 1.0), in: Capsule())
-            .contentShape(Capsule())
+            Label(title, systemImage: isStop ? "stop.fill" : "play.fill")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(controlSize)
+        .tint(isStop ? ZenPalette(colorScheme).stopCrimson : .accentColor)
+        .fixedSize()
         .disabled(isDisabled)
     }
 }
 
-// MARK: - Recessed Waveform Well with Floating dB Pill ("动如雷霆")
+// MARK: - Waveform display
 
 public struct ZenWaveformWell: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -577,98 +471,67 @@ public struct ZenWaveformWell: View {
     }
 
     private var dbText: String {
-        let clamped = level.isFinite ? max(min(level, 1.0), 0.001) : 0.12
+        if samples.isEmpty && level == 0 { return "— dB" }
+        let clamped = level.isFinite ? max(min(level, 1.0), 0.001) : 0.001
         let db = max(-48.0, min(0.0, 20.0 * log10(clamped)))
         return String(format: "%.1f dB", db)
     }
 
     public var body: some View {
         let palette = ZenPalette(colorScheme)
-        ZStack(alignment: .topTrailing) {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(palette.recessedWell)
-                .overlay {
-                    if palette.isDark {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(palette.border, lineWidth: 1)
-                    }
-                }
-
-            GeometryReader { geo in
-                let bars = Self.normalizedBars(from: samples, level: level, targetCount: barCount)
-                let barWidth: CGFloat = 4.5
-                let totalBarsWidth = CGFloat(barCount) * barWidth
-                let spacing = max(3, (geo.size.width - 36 - totalBarsWidth) / CGFloat(max(barCount - 1, 1)))
-                let maxBarHeight = max(12, geo.size.height - 14)
-
-                HStack(alignment: .center, spacing: spacing) {
-                    ForEach(Array(bars.enumerated()), id: \.offset) { idx, amp in
-                        let barHeight = max(6, CGFloat(amp) * maxBarHeight)
-                        Capsule()
-                            .fill(palette.waveBarBlue.opacity(idx.isMultiple(of: 3) ? 0.78 : 1.0))
-                            .frame(width: barWidth, height: barHeight)
-                    }
-                }
-                .padding(.horizontal, 18)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
+        let bars = Self.normalizedBars(from: samples, level: level, targetCount: barCount)
+        VStack(alignment: .leading, spacing: 3) {
             if showDbPill {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(palette.emeraldGreen)
-                        .frame(width: 6, height: 6)
+                HStack {
+                    Label("输入电平", systemImage: "waveform")
+                        .foregroundStyle(.secondary)
+                    Spacer()
                     Text(dbText)
-                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(palette.textPrimary)
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule()
-                        .fill(palette.isDark ? Color(red: 0x16 / 255.0, green: 0x1B / 255.0, blue: 0x22 / 255.0) : Color.white)
-                )
-                .overlay {
-                    Capsule()
-                        .strokeBorder(
-                            palette.isDark ? Color(red: 0x30 / 255.0, green: 0x36 / 255.0, blue: 0x3D / 255.0) : palette.activeBorder.opacity(0.45),
-                            lineWidth: 0.9
-                        )
-                }
-                .padding(.top, 10)
-                .padding(.trailing, 14)
+                .font(.caption)
             }
+
+            Canvas { context, size in
+                guard !bars.isEmpty else { return }
+                let step = size.width / CGFloat(bars.count)
+                let barWidth = min(step * 0.48, 4)
+                let barHeight = size.height - 4
+
+                for (index, amplitude) in bars.enumerated() {
+                    let height = max(2, CGFloat(amplitude) * barHeight)
+                    let rect = CGRect(
+                        x: (CGFloat(index) + 0.5) * step - barWidth / 2,
+                        y: (size.height - height) / 2,
+                        width: barWidth,
+                        height: height
+                    )
+                    let tint = height <= 2 ? Color.secondary.opacity(0.35) : palette.waveBarBlue
+                    context.fill(Path(roundedRect: rect, cornerRadius: barWidth / 2), with: .color(tint))
+                }
+            }
+            .frame(height: 44)
         }
-        .frame(height: 76)
-        .accessibilityLabel("来自当前快照的音频波形 \(dbText)")
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(palette.recessedWell, in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("输入电平 \(dbText)")
     }
 
     public static func normalizedBars(from input: [Double], level: Double, targetCount: Int) -> [Double] {
-        let pattern: [Double] = [
-            0.12, 0.22, 0.35, 0.56, 0.81, 0.96, 0.72, 0.50,
-            0.28, 0.44, 0.75, 0.91, 0.95, 0.68, 0.40, 0.25,
-            0.46, 0.74, 0.92, 0.84, 0.58, 0.34, 0.22, 0.40,
-            0.68, 0.86, 0.96, 0.76, 0.52, 0.30, 0.18, 0.38,
-            0.65, 0.84, 0.90, 0.62, 0.40, 0.25, 0.44, 0.72,
-            0.90, 0.74, 0.50, 0.28, 0.18, 0.32, 0.50, 0.25
-        ]
-        let nonZeroInput = input.filter { $0.isFinite && abs($0) > 0.01 }
-        guard !nonZeroInput.isEmpty else {
-            let scale = level.isFinite && level > 0.02 ? min(max(level * 1.25, 0.45), 1.0) : 0.88
-            return (0..<targetCount).map { i in
-                min(1.0, max(0.10, pattern[i % pattern.count] * scale))
-            }
+        guard targetCount > 0 else { return [] }
+        guard !input.isEmpty else {
+            return Array(repeating: level.isFinite ? min(max(level, 0), 1) : 0, count: targetCount)
         }
-        return (0..<targetCount).map { i in
-            let pos = Double(i) * Double(max(input.count - 1, 0)) / Double(max(targetCount - 1, 1))
-            let low = Int(pos.rounded(.down))
+        return (0..<targetCount).map { index in
+            let position = Double(index) * Double(input.count - 1) / Double(max(targetCount - 1, 1))
+            let low = Int(position.rounded(.down))
             let high = min(input.count - 1, low + 1)
-            let frac = pos - Double(low)
-            let raw = abs(input[low] * (1 - frac) + input[high] * frac)
-            letFloor: do {
-                let shaped = min(1.0, max(0.12, raw * 1.35))
-                return max(shaped, pattern[i % pattern.count] * 0.45)
-            }
+            let fraction = position - Double(low)
+            let amplitude = abs(input[low] * (1 - fraction) + input[high] * fraction)
+            return amplitude.isFinite ? min(amplitude, 1) : 0
         }
     }
 }

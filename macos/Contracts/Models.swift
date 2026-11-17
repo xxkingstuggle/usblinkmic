@@ -243,6 +243,19 @@ public struct WifiAutoSnapshot: Equatable, Sendable {
  public var pausedByUser = false
  public init() {}
 }
+public struct USBChargingStatus: Equatable, Sendable {
+ public enum Phase: String, Sendable {
+  case disconnected, checking, requesting, charging, full, powered, notCharging
+  case supplyingPower, unsupported, unknown, unconfirmed
+ }
+ public var phase: Phase
+ public var batteryPercent: Int?
+ public var canRequest: Bool
+ public var deviceID: String?
+ public init(_ phase: Phase = .disconnected, batteryPercent: Int? = nil, canRequest: Bool = false, deviceID: String? = nil) {
+  self.phase=phase;self.batteryPercent=batteryPercent;self.canRequest=canRequest;self.deviceID=deviceID
+ }
+}
 public struct AppSnapshot: Sendable {
  public var devices: [Device] = []
  public var selectedDeviceID: String? = nil
@@ -252,6 +265,7 @@ public struct AppSnapshot: Sendable {
  public var macInternet = ModuleStatus()
  public var audioState: AudioState = .disconnected
  public var networkState: NetworkState = .stopped
+ public var usbCharging = USBChargingStatus()
  public var microphonePermission: PermissionState = .notRequested
  public var notificationPermission: PermissionState = .notRequested
  public var vpnPermission: PermissionState = .notRequested
@@ -274,6 +288,7 @@ public struct AppSnapshot: Sendable {
 }
 public enum UserAction: Sendable {
  case refresh, selectDevice(String), start(Workspace), stop(Workspace), stopAll
+ case observeUSBCharging(Bool), requestUSBCharging
  case saveSettings(Settings), setGain(Double), setMuted(Bool), skipWizard, completeSoundTest
  case exportLogs, clearLogs, openDriverHelp, openPhoneSettings
  case approveWifiPair(String), rejectWifiPair(String), forgetWifiPhone(String), setWifiAutoConnect(Bool)

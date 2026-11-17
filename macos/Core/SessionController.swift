@@ -137,6 +137,13 @@ private final class AudioDelivery: @unchecked Sendable {
  private var lastRefreshErrorAt: TimeInterval = 0
  private var isRefreshingDevices = false
  private var adbServerWarm = false
+ private var wiredChargingDevices: [USBCharging.Target] = []
+ private var observesUSBCharging = false
+ private var chargingProbeTarget: USBCharging.Target?
+ private var chargingProbe: Task<Void,Never>?
+ private var chargingReadAt: TimeInterval = -.infinity
+ private var chargingRequestInProgress = false
+ private var manualChargingRequest: Task<Void,Never>?
  private var networkHealthSummaryAt: TimeInterval = 0
  private struct AutoWifiGrant {let sessionID:String;let phoneID:String;let phoneName:String;let token:String;let audio:AudioParameters}
  /// Set only for a session started by an authenticated Wi-Fi control `prepare`; nil for USB/manual.
@@ -269,6 +276,13 @@ private final class AudioDelivery: @unchecked Sendable {
      Task{await stopSessions(for:previous,source:source)}
     }
     snapshot.selectedDeviceID=serial
+    refreshUSBCharging()
+   case .observeUSBCharging(let enabled):
+    observesUSBCharging=enabled
+    if enabled {refreshUSBCharging(force:true)}
+    else {chargingProbe?.cancel();chargingProbe=nil}
+   case .requestUSBCharging:
+    requestUSBCharging()
    case .start(let module):
     log(module.rawValue,"userAction","source=\(source.rawValue), action=start, device=\(deviceAlias(snapshot.selectedDeviceID ?? "")), transport=\(snapshot.settings.transport.rawValue)")
     if module == .microphone {
@@ -590,10 +604,14 @@ private final class AudioDelivery: @unchecked Sendable {
     log("devices","autoSwitched","from=\(deviceAlias(selected)), to=\(deviceAlias(replacement.id)), absentSeconds=\(Int(now-missingSince))")
    }
    lastRefreshErrorText=""
+   wiredChargingDevices=USBCharging.Target.wiredDevices(text)
+   refreshUSBCharging(force:manual)
    await reconcileDeviceSessions()
   }catch{
    if !quitting,!Task.isCancelled {
     missingDeviceSince.removeAll()
+    wiredChargingDevices=[]
+    refreshUSBCharging()
     let errText=error.localizedDescription
     let now=ProcessInfo.processInfo.systemUptime
     if manual || errText != lastRefreshErrorText || now-lastRefreshErrorAt>=30 {
@@ -716,6 +734,79 @@ private final class AudioDelivery: @unchecked Sendable {
    await retryPendingSession(session)
   }
  }
+ private var chargingSerial: String? {
+  let active = [Workspace.phoneInternet,.macInternet].filter {activeSessions[$0] != nil && !stopping.contains($0)}
+  let running = active.first {($0 == .phoneInternet ? snapshot.phoneInternet : snapshot.macInternet).phase == .running}
+  return (running ?? active.first).flatMap {owned[$0]?.serial} ?? snapshot.selectedDeviceID
+ }
+ private func showUSBCharging(_ state: USBChargingStatus) {
+  if state != snapshot.usbCharging {snapshot.usbCharging=state}
+ }
+ private func refreshUSBCharging(force:Bool=false) {
+  guard !quitting,!chargingRequestInProgress else{return}
+  let target=USBCharging.Target.match(chargingSerial,in:wiredChargingDevices)
+  if target != chargingProbeTarget {
+   chargingProbe?.cancel();chargingProbe=nil;chargingProbeTarget=target;chargingReadAt = -.infinity
+   showUSBCharging(target.map {USBChargingStatus(.checking,deviceID:$0.serial)} ?? USBChargingStatus())
+  }
+  guard let target else{showUSBCharging(USBChargingStatus());return}
+  guard observesUSBCharging,chargingProbe==nil,force || ProcessInfo.processInfo.systemUptime-chargingReadAt>=15 else{return}
+  chargingProbe=Task {
+   let reading=try? await USBCharging(adb:adb).read(target)
+   guard !Task.isCancelled,!quitting,chargingProbeTarget==target else{return}
+   chargingProbe=nil;chargingReadAt=ProcessInfo.processInfo.systemUptime
+   guard chargingSerial==target.serial else{return}
+   var state=reading?.status ?? USBChargingStatus(.unknown,deviceID:target.serial)
+   if snapshot.usbCharging.deviceID==target.serial,snapshot.usbCharging.phase == .unconfirmed,state.phase == .supplyingPower {
+    state.phase = .unconfirmed
+   }
+   showUSBCharging(state)
+  }
+ }
+ private func requestUSBCharging() {
+  guard !recovering,!snapshot.isSavingSettings,manualChargingRequest==nil,!chargingRequestInProgress,
+        let serial=chargingSerial,snapshot.usbCharging.deviceID==serial,snapshot.usbCharging.canRequest,
+        ![Workspace.phoneInternet,.macInternet].contains(where:{module in
+         stopping.contains(module) || ((jobs[module] != nil || activeSessions[module] != nil) &&
+          (module == .phoneInternet ? snapshot.phoneInternet : snapshot.macInternet).phase != .running)
+        }) else{return}
+  manualChargingRequest=Task {
+   defer {manualChargingRequest=nil}
+   await checkUSBCharging(serial:serial,manual:true)
+  }
+ }
+ private func checkUSBCharging(serial:String,manual:Bool=false) async {
+  guard !chargingRequestInProgress,!quitting,!Task.isCancelled else{return}
+  chargingRequestInProgress=true
+  chargingProbe?.cancel();chargingProbe=nil
+  defer {
+   chargingRequestInProgress=false;chargingReadAt=ProcessInfo.processInfo.systemUptime
+   refreshUSBCharging()
+  }
+  let service=USBCharging(adb:adb)
+  do {
+   guard let target=try await service.target(for:serial) else{
+    wiredChargingDevices.removeAll {$0.serial==serial}
+    return
+   }
+   let reading=try await service.read(target)
+   try Task.checkCancellation()
+   guard !quitting,!manual || chargingSerial==serial else{return}
+   if !reading.status.canRequest {
+    if chargingSerial==serial {showUSBCharging(reading.status)}
+    return
+   }
+   if chargingSerial==serial {showUSBCharging(USBChargingStatus(.requesting,batteryPercent:reading.status.batteryPercent,deviceID:serial))}
+   log("charging","request","device=\(deviceAlias(serial)), trigger=\(manual ? "manual":"networkStart")")
+   let state=try await service.request(target,from:reading)
+   if !quitting,chargingSerial==serial {showUSBCharging(state)}
+   log("charging","result","device=\(deviceAlias(serial)), phase=\(state.phase.rawValue)")
+  }catch {
+   if !quitting,chargingSerial==serial {
+    showUSBCharging(USBChargingStatus(.unknown,deviceID:serial))
+   }
+  }
+ }
  private var usbNetworkTransition:Bool {
   snapshot.settings.transport == .usb && owned[.phoneInternet] != nil && snapshot.phoneInternet.phase != .running
  }
@@ -744,6 +835,7 @@ private final class AudioDelivery: @unchecked Sendable {
   }
  }
  private func execute(_ module:Workspace,expectedSerial:String?=nil,verifySelection:Bool=false) async {
+  if module != .microphone {await manualChargingRequest?.value}
   guard !Task.isCancelled,!quitting,!snapshot.isSavingSettings,owned[module]==nil,!stopping.contains(module),
         !verifySelection || snapshot.selectedDeviceID==expectedSerial else{return}
   let executionIntent=microphoneIntent
@@ -1195,6 +1287,8 @@ private final class AudioDelivery: @unchecked Sendable {
   guard valid(.macInternet,id) else{throw CancellationError()}
   let java=root.appendingPathComponent("runtime/bin/java");let jar=root.appendingPathComponent("relay.jar")
   guard FileManager.default.isExecutableFile(atPath:java.path),FileManager.default.fileExists(atPath:jar.path) else{throw LinkError.failure("RELAY_MISSING","发行包缺少内置转发运行时")}
+  await checkUSBCharging(serial:serial)
+  guard valid(.macInternet,id) else{throw CancellationError()}
   let p=Process();p.executableURL=java;p.arguments=["-DUSBLinkMic.session=\(id)","-jar",jar.path,"relay","-p","48128"];p.standardOutput=FileHandle.nullDevice;p.standardError=FileHandle.nullDevice
   try p.run();relay=p;owned[.macInternet]?.relayPID=p.processIdentifier;owned[.macInternet]?.relayExecutable=java.path;try saveJournal()
   p.terminationHandler={ [weak self] _ in Task{@MainActor in guard let self=self,self.valid(.macInternet,id) else{return};await self.stop(.macInternet);self.status(.macInternet,.failed,"转发进程已退出","检查日志并重新启动","RELAY_EXITED")} }
@@ -1288,6 +1382,8 @@ private final class AudioDelivery: @unchecked Sendable {
   }else{log("phoneInternet","usbFunctions",borrowedSharing ? "USB已处于NCM；保留原共享并继续确认USB连接":"USB已处于NCM且未共享；继续启动共享，不把NCM模式误当作已供网")}
   guard valid(.phoneInternet,id) else{throw CancellationError()}
   try await driver.waitForEthernet(serial)
+  guard valid(.phoneInternet,id) else{throw CancellationError()}
+  await checkUSBCharging(serial:serial)
   guard valid(.phoneInternet,id) else{throw CancellationError()}
   guard let port=owned[.phoneInternet]?.controlForward else{throw LinkError.failure("CONTROL_FORWARD","缺少本次控制通道回执")}
   let mappings=try await adb.run(nil,["forward","--list"],timeout:3)
@@ -1678,6 +1774,7 @@ private final class AudioDelivery: @unchecked Sendable {
   if let job=stopJobs[module] {await job.value;return}
   cancelDeferredStarts(module:module)
   jobs[module]?.cancel();jobs[module]=nil;jobIDs[module]=nil
+  if module == .phoneInternet || module == .macInternet {manualChargingRequest?.cancel()}
   if module == .microphone, let grant = autoGrant {
    let grantSession = grant.sessionID
    autoGrant = nil
@@ -1793,6 +1890,7 @@ private final class AudioDelivery: @unchecked Sendable {
   await stopAll(source:.system)
  }
  public func stopAll(source:ActionSource) async {
+  manualChargingRequest?.cancel()
   revokeMicrophoneIntent("stopAll")
   for module in [Workspace.microphone,.phoneInternet,.macInternet] {
    await stop(module,source:source)
@@ -1809,6 +1907,7 @@ private final class AudioDelivery: @unchecked Sendable {
  }
  private func performShutdown(timeout:TimeInterval) async -> Bool {
   quitting=true
+  manualChargingRequest?.cancel();chargingProbe?.cancel()
   wifiListener?.stop();wifiTicker?.cancel();wifiTicker=nil
   await wifiService?.shutdown()
   log("shutdown","started","timeout=\(String(format:"%.2f",timeout))s, owned=[\(owned.keys.map(\.rawValue).sorted().joined(separator:","))]")
@@ -1882,6 +1981,7 @@ private final class AudioDelivery: @unchecked Sendable {
   }
   shutdownDeadlineExpired=true
   quitting=true
+  manualChargingRequest?.cancel();chargingProbe?.cancel()
   wifiListener?.stop();wifiTicker?.cancel();wifiTicker=nil
   activeSessions.removeAll()
   processGroup.cancelAll()
