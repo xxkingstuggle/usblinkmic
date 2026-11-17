@@ -32,6 +32,22 @@
 
 Mac 安装包内已包含配套 APK、ADB 和转发运行时，日常使用不需要安装 Xcode、Android Studio 或 Java。
 
+## 实际界面（v4.0.17 开发版）
+
+以下为用户提供的 Mac 实际运行截图，设备标识已遮盖。截图对应 **v4.0.17**，与 Releases 公开下载版本可能不同；展示某一连接状态不代表全机型兼容性或完整功能验收。
+
+**USB 网络共享：手机网络给 Mac / Mac 网络给手机**
+
+![USB LinkMic USB 网络共享界面](docs/screenshots/usblinkmic-network.svg)
+
+**手机麦克风：USB / Wi-Fi 音频及虚拟声卡**
+
+![USB LinkMic 手机麦克风界面](docs/screenshots/usblinkmic-microphone.svg)
+
+**菜单栏快捷控制**
+
+<img src="docs/screenshots/usblinkmic-menu.svg" width="480" alt="USB LinkMic 菜单栏控制界面" />
+
 ## 快速开始
 
 1. 从 [Releases](https://github.com/xxkingstuggle/usblinkmic/releases/latest) 下载 DMG，将 USB LinkMic 拖入「应用程序」。
