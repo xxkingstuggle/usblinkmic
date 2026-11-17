@@ -24,13 +24,15 @@ public struct AudioParameters: Codable, Equatable, Sendable {
 public enum Capabilities {
  public static let protocolVersion = 4
  public static let controlRevision = 1
- public static let runtimeRevision = 415
+ public static let runtimeRevision = 416
  public static let sampleRates = [16000, 44100, 48000, 96000]
  public static let channels = [1, 2]
  public static let maxFrameBytes = 262144
  public static let androidControlComponent = "com.zjx.usblinkmic/.AdbControlActivity"
  public static let legacyAndroidControlComponent = "com.zjx.usblinkmic/.MainActivity"
- public static let version = "4.0.16"
+ public static let version = "4.0.17"
+ public static let wifiRevision = 1
+ public static let bonjourServiceType = "_usblinkmic._tcp"
 }
 public struct Settings: Codable, Equatable, Sendable {
  public var schemaVersion = 1
@@ -47,7 +49,28 @@ public struct Settings: Codable, Equatable, Sendable {
  public var muted = false
  public var dns = "1.1.1.1"
  public var routes = "0.0.0.0/0"
+ /// Publishes this Mac on the local network and accepts trusted phones without a typed IP address.
+ public var wifiAutoConnect = true
  public init() {}
+ public init(from decoder: Decoder) throws {
+  let c = try decoder.container(keyedBy: CodingKeys.self)
+  schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+  audio = try c.decode(AudioParameters.self, forKey: .audio)
+  transport = try c.decode(AudioTransport.self, forKey: .transport)
+  purpose = try c.decode(OutputPurpose.self, forKey: .purpose)
+  listenAddress = try c.decode(String.self, forKey: .listenAddress)
+  audioPort = try c.decode(Int.self, forKey: .audioPort)
+  controlPort = try c.decode(Int.self, forKey: .controlPort)
+  wifiHost = try c.decode(String.self, forKey: .wifiHost)
+  pairingCode = try c.decode(String.self, forKey: .pairingCode)
+  outputUID = try c.decode(String.self, forKey: .outputUID)
+  gain = try c.decode(Double.self, forKey: .gain)
+  muted = try c.decode(Bool.self, forKey: .muted)
+  dns = try c.decode(String.self, forKey: .dns)
+  routes = try c.decode(String.self, forKey: .routes)
+  // Added after the first schema-1 release: an older settings.json simply lacks it.
+  wifiAutoConnect = try c.decodeIfPresent(Bool.self, forKey: .wifiAutoConnect) ?? true
+ }
 }
 public struct Device: Identifiable, Equatable, Sendable {
  public var id: String
@@ -194,6 +217,45 @@ public struct TelemetryVisibilityState: Equatable, Sendable {
   }
  }
 }
+public enum WifiAutoPhase: String, Codable, Sendable { case off, starting, listening, pairing, preparing, streaming, paused, failed }
+public struct WifiPairPrompt: Equatable, Sendable {
+ public var requestID: String
+ public var phoneName: String
+ public var phoneShortID: String
+ public var code: String
+ public var expiresAt: Date
+ public init(requestID: String, phoneName: String, phoneShortID: String, code: String, expiresAt: Date) {
+  self.requestID=requestID; self.phoneName=phoneName; self.phoneShortID=phoneShortID; self.code=code; self.expiresAt=expiresAt
+ }
+}
+public struct TrustedPhoneInfo: Identifiable, Equatable, Sendable {
+ public var id: String
+ public var name: String
+ public var pairedAt: Date
+ public init(id: String, name: String, pairedAt: Date) { self.id=id; self.name=name; self.pairedAt=pairedAt }
+}
+public struct WifiAutoSnapshot: Equatable, Sendable {
+ public var phase: WifiAutoPhase = .off
+ public var message = "Wi-Fi 自动连接已关闭"
+ public var pendingPair: WifiPairPrompt? = nil
+ public var trusted: [TrustedPhoneInfo] = []
+ public var connectedPhoneName: String? = nil
+ public var pausedByUser = false
+ public init() {}
+}
+public struct USBChargingStatus: Equatable, Sendable {
+ public enum Phase: String, Sendable {
+  case disconnected, checking, requesting, charging, full, powered, notCharging
+  case supplyingPower, unsupported, unknown, unconfirmed
+ }
+ public var phase: Phase
+ public var batteryPercent: Int?
+ public var canRequest: Bool
+ public var deviceID: String?
+ public init(_ phase: Phase = .disconnected, batteryPercent: Int? = nil, canRequest: Bool = false, deviceID: String? = nil) {
+  self.phase=phase;self.batteryPercent=batteryPercent;self.canRequest=canRequest;self.deviceID=deviceID
+ }
+}
 public struct AppSnapshot: Sendable {
  public var devices: [Device] = []
  public var selectedDeviceID: String? = nil
@@ -203,6 +265,7 @@ public struct AppSnapshot: Sendable {
  public var macInternet = ModuleStatus()
  public var audioState: AudioState = .disconnected
  public var networkState: NetworkState = .stopped
+ public var usbCharging = USBChargingStatus()
  public var microphonePermission: PermissionState = .notRequested
  public var notificationPermission: PermissionState = .notRequested
  public var vpnPermission: PermissionState = .notRequested
@@ -220,12 +283,15 @@ public struct AppSnapshot: Sendable {
  public var wizardSkipped = false
  public var soundTestCompleted = false
  public var recoveryMessage = ""
+ public var wifiAuto = WifiAutoSnapshot()
  public init() {}
 }
 public enum UserAction: Sendable {
  case refresh, selectDevice(String), start(Workspace), stop(Workspace), stopAll
+ case observeUSBCharging(Bool), requestUSBCharging
  case saveSettings(Settings), setGain(Double), setMuted(Bool), skipWizard, completeSoundTest
  case exportLogs, clearLogs, openDriverHelp, openPhoneSettings
+ case approveWifiPair(String), rejectWifiPair(String), forgetWifiPhone(String), setWifiAutoConnect(Bool)
 }
 @MainActor public protocol AppControlling: AnyObject {
  var snapshot: AppSnapshot { get }

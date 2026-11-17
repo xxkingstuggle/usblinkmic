@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -42,6 +44,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -71,19 +74,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.zjx.usblinkmic.contracts.AppSnapshot
-import com.zjx.usblinkmic.contracts.AudioParameters
-import com.zjx.usblinkmic.contracts.Capabilities
-import com.zjx.usblinkmic.contracts.LogEntry
-import com.zjx.usblinkmic.contracts.ModuleStatus
-import com.zjx.usblinkmic.contracts.PCMFormat
-import com.zjx.usblinkmic.contracts.PermissionState
-import com.zjx.usblinkmic.contracts.RecordingSource
-import com.zjx.usblinkmic.contracts.Settings
-import com.zjx.usblinkmic.contracts.TaskPhase
-import com.zjx.usblinkmic.contracts.UserAction
+import com.zjx.usblinkmic.contracts.*
 import com.zjx.usblinkmic.support.LogRedactor
 import com.zjx.usblinkmic.support.SettingsValidator
 import java.text.DateFormat
@@ -235,7 +229,8 @@ private fun MicrophonePage(
         TaskPhase.CONNECTING,
         TaskPhase.STOPPING,
     )
-    val canStart = !settingsDirty && snapshot.settings.wifiHost.isNotBlank()
+    val hasTrustedMac = snapshot.settings.wifiAutoConnect && snapshot.wifiAuto.trusted.isNotEmpty()
+    val canStart = !settingsDirty && (if (snapshot.settings.wifiAutoConnect) hasTrustedMac else snapshot.settings.wifiHost.isNotBlank())
     val effectiveAudio = snapshot.effectiveAudio ?: snapshot.settings.audio
 
     Column(
@@ -274,6 +269,10 @@ private fun MicrophonePage(
             Text(
                 text = when {
                     running -> if (snapshot.controlledByMac) "Mac 控制 · 实时传输" else "手机端 · 实时传输"
+                    snapshot.wifiAuto.phase == WifiAutoPhase.PAIRING -> "正在配对绑定"
+                    snapshot.wifiAuto.phase == WifiAutoPhase.CONNECTING || snapshot.wifiAuto.phase == WifiAutoPhase.PREPARING -> "正在连接 Mac"
+                    snapshot.wifiAuto.phase == WifiAutoPhase.STREAMING -> "已连接 Mac"
+                    hasTrustedMac -> "自动就绪 · 点击开始拾音"
                     snapshot.settings.wifiHost.isBlank() -> "未配置 Mac 地址"
                     else -> "随时就绪"
                 },
@@ -285,6 +284,89 @@ private fun MicrophonePage(
                     .border(1.dp, palette.border, CircleShape)
                     .padding(horizontal = 10.dp, vertical = 5.dp),
             )
+        }
+
+        if (snapshot.wifiAuto.pendingPairCode != null) {
+            ZenCard(palette, active = true) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Outlined.Wifi,
+                        contentDescription = null,
+                        tint = palette.blue,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "请求绑定 Mac「${snapshot.wifiAuto.pendingPairMacName ?: "Mac"}」",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = "请确认 Mac 屏幕显示相同的验证码：",
+                            fontSize = 12.sp,
+                            color = palette.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = snapshot.wifiAuto.pendingPairCode ?: "",
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Black,
+                    color = palette.blue,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                    letterSpacing = 4.sp,
+                )
+                Spacer(Modifier.height(12.dp))
+                ZenSecondaryButton("取消配对", palette) {
+                    onAction(UserAction.CancelPairing)
+                }
+            }
+        }
+
+        val untrustedDiscovered = snapshot.wifiAuto.discovered.filter { !it.isTrusted }
+        if (!running && untrustedDiscovered.isNotEmpty()) {
+            ZenGroup(palette, "发现局域网 Mac") {
+                untrustedDiscovered.forEachIndexed { index, mac ->
+                    if (index > 0) {
+                        HorizontalDivider(color = palette.divider)
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = mac.name,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "${mac.host}:${mac.controlPort}",
+                                fontSize = 12.sp,
+                                color = palette.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        ZenSecondaryButton("配对绑定", palette) {
+                            onAction(UserAction.PairWithMac(mac.id))
+                        }
+                    }
+                }
+            }
         }
 
         ZenCard(palette, active = running) {
@@ -391,8 +473,10 @@ private fun MicrophonePage(
                 Text(
                     text = if (settingsDirty) {
                         "设置草稿尚未保存；保存后才能使用新目标。"
+                    } else if (snapshot.settings.wifiAutoConnect) {
+                        "未绑定 Mac：请在下方局域网列表中选择 Mac，核对 6 位验证码完成绑定"
                     } else {
-                        "请先在「设置与诊断」中填写 Mac 的 Wi-Fi 地址。"
+                        "未配置目标：请开启「局域网自动连接」或在设置中填写 Mac Wi-Fi 地址"
                     },
                     fontSize = 12.sp,
                     color = if (settingsDirty) palette.red else palette.textSecondary,
@@ -653,7 +737,71 @@ private fun SettingsPage(
             subtitle = "控制音频引擎、通信参数与安卓底层权限",
         )
 
-        ZenGroup(palette, "Wi-Fi 麦克风（连接 Mac 接收端）") {
+        ZenGroup(palette, "Wi-Fi 自动连接与已绑定 Mac") {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动连接可信 Mac", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = palette.textPrimary)
+                    Text(
+                        if (snapshot.settings.wifiAutoConnect) "发现已配对 Mac 时自动完成安全连接" else "已停用局域网自动连接",
+                        fontSize = 12.sp,
+                        color = palette.textSecondary,
+                    )
+                }
+                Switch(
+                    checked = snapshot.settings.wifiAutoConnect,
+                    onCheckedChange = { onAction(UserAction.SetWifiAutoConnect(it)) },
+                )
+            }
+            if (snapshot.wifiAuto.trusted.isNotEmpty()) {
+                HorizontalDivider(color = palette.divider)
+                snapshot.wifiAuto.trusted.forEachIndexed { index, mac ->
+                    if (index > 0) {
+                        HorizontalDivider(color = palette.divider)
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = mac.name,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "ID: ${mac.id.take(8)}",
+                                fontSize = 11.sp,
+                                color = palette.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        ZenSecondaryButton(
+                            title = "解除信任",
+                            palette = palette,
+                            modifier = Modifier.wrapContentWidth(),
+                        ) {
+                            onAction(UserAction.ForgetMac(mac.id))
+                        }
+                    }
+                }
+            }
+        }
+
+        ZenGroup(palette, "手动 Wi-Fi 参数（高级排障备用）") {
             ZenFieldRow(
                 palette,
                 label = "Mac 目标地址",
@@ -1351,18 +1499,23 @@ private fun ZenPrimaryButton(
 }
 
 @Composable
-private fun ZenSecondaryButton(title: String, palette: ZenPalette, onClick: () -> Unit) {
+private fun ZenSecondaryButton(
+    title: String,
+    palette: ZenPalette,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    onClick: () -> Unit,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .height(46.dp)
             .clip(CircleShape)
             .border(1.dp, palette.border, CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = palette.textPrimary)
+        Text(title, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = palette.textPrimary, maxLines = 1)
     }
 }
 
@@ -1562,6 +1715,7 @@ private data class SettingsDraft(
     val pairingCode: String,
     val dns: String,
     val routes: String,
+    val wifiAutoConnect: Boolean = true,
 ) {
     fun toSettings(base: Settings): Settings? {
         val parsedRate = sampleRate.toIntOrNull() ?: return null
@@ -1581,6 +1735,7 @@ private data class SettingsDraft(
             pairingCode = pairingCode.trim(),
             dns = dns.trim(),
             routes = routes.trim(),
+            wifiAutoConnect = wifiAutoConnect,
         )
     }
 
@@ -1603,6 +1758,7 @@ private data class SettingsDraft(
             pairingCode = settings.pairingCode,
             dns = settings.dns,
             routes = settings.routes,
+            wifiAutoConnect = settings.wifiAutoConnect,
         )
     }
 }

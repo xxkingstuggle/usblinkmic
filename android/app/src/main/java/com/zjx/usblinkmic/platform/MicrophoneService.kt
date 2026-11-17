@@ -652,6 +652,7 @@ class MicrophoneService : Service() {
             capture.closeResources()
             try { ownedAudio?.release() } catch (_: Exception) { }
             val stopThisStart = releaseCapture(capture)
+            Runtime.onMicrophoneServiceStopped(r.session, r.error)
             if (stopThisStart) stopSelf(startId)
         }
     }
@@ -676,6 +677,12 @@ class MicrophoneService : Service() {
     }
 
     override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         val currentRequest = request
         if (currentRequest != null) {
             if (!currentRequest.cancelled && currentRequest.accepted && currentRequest.error.isBlank()) {
@@ -683,6 +690,7 @@ class MicrophoneService : Service() {
                 Runtime.log("audio", "serviceDestroyed", "服务结束时本次会话未收到明确停止")
             }
             stopCapture(currentRequest)
+            Runtime.onMicrophoneServiceStopped(currentRequest.session, currentRequest.error)
             if (Runtime.audioRequest === currentRequest) {
                 Runtime.audioRequest = null
                 val snapshot = Runtime.state.value

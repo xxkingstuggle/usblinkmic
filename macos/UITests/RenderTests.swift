@@ -72,8 +72,10 @@ final class RenderTests: XCTestCase {
 
         var phoneRunning = activeSnapshot()
         phoneRunning.phoneInternet = ModuleStatus(phase: .running, stage: "USB共享已连接", detail: "")
+        phoneRunning.usbCharging = USBChargingStatus(.charging, batteryPercent: 42)
         var macRunning = activeSnapshot()
         macRunning.macInternet = ModuleStatus(phase: .running, stage: "已连接", detail: "")
+        macRunning.usbCharging = USBChargingStatus(.supplyingPower, batteryPercent: 7, canRequest: true)
 
         for (name, snapshot) in [("phone-leads", phoneRunning), ("mac-leads", macRunning)] {
             let view = NSHostingView(

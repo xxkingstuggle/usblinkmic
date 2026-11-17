@@ -110,6 +110,7 @@ object SettingsValidator {
         if (from.pairingCode != to.pairingCode) keys += "pairingCode"
         if (from.dns != to.dns) keys += "dns"
         if (from.routes != to.routes) keys += "routes"
+        if (from.wifiAutoConnect != to.wifiAutoConnect) keys += "wifiAutoConnect"
         return keys
     }
 

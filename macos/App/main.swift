@@ -4,7 +4,7 @@ import Core
 import UI
 
 @main struct USBLinkMicApp: App {
-    @StateObject private var controller = SessionController()
+    @StateObject private var controller = SessionController(wifiAutoConnect: true)
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {
@@ -14,15 +14,13 @@ import UI
                 telemetry: controller.telemetry,
                 send: { controller.send($0, source: .ui) }
             )
-            .frame(minWidth: 860, minHeight: 580)
-            .ignoresSafeArea(.container, edges: .top)
+            .frame(minWidth: 800, minHeight: 560)
             .onAppear {
                 delegate.controller = controller
                 controller.boot()
             }
         }
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1120, height: 720)
+        .defaultSize(width: 1000, height: 690)
         .commands {
             CommandMenu("连接") {
                 Button("刷新") { controller.send(.refresh, source: .ui) }.keyboardShortcut("r")

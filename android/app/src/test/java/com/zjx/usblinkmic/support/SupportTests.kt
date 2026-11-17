@@ -517,7 +517,7 @@ class SupportTests {
     }
 }
 
-private class MemoryPreferences : SharedPreferences {
+internal class MemoryPreferences : SharedPreferences {
     private val values = linkedMapOf<String, Any?>()
     var commitCount: Int = 0
         private set

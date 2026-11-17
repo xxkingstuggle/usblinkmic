@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Contracts
 import Support
 
@@ -110,15 +111,15 @@ struct MicrophoneWorkspaceView: View {
         draft != MicrophoneSettingsDraft(from: snapshot.settings)
     }
 
+    private var usbDevice: Device? {
+        snapshot.devices.first { $0.id == snapshot.selectedDeviceID } ?? snapshot.devices.first
+    }
+
     private var deviceDisplayName: String {
-        if let id = snapshot.selectedDeviceID,
-           let device = snapshot.devices.first(where: { $0.id == id }) {
-            return device.name
+        if snapshot.settings.transport == .wifi {
+            return snapshot.wifiAuto.connectedPhoneName ?? "Wi-Fi 手机"
         }
-        if let first = snapshot.devices.first {
-            return first.name
-        }
-        return "Android 手机"
+        return usbDevice?.name ?? "Android 手机"
     }
 
     private var effectiveAudio: AudioParameters {
@@ -138,49 +139,48 @@ struct MicrophoneWorkspaceView: View {
     }
 
     private var selectedOutputShortName: String {
-        if let match = snapshot.outputs.first(where: { $0.id == snapshot.settings.outputUID }) {
-            return match.name
-        }
-        if snapshot.settings.outputUID == "default" {
-            return snapshot.outputs.first(where: { $0.isVirtual })?.name ?? "系统默认声卡"
-        }
-        return snapshot.settings.outputUID
+        outputName(for: snapshot.settings.outputUID)
     }
 
     private var selectedDraftOutputShortName: String {
-        if let match = snapshot.outputs.first(where: { $0.id == draft.outputUID }) {
-            return match.name
-        }
-        if draft.outputUID == "default" {
-            return snapshot.outputs.first(where: { $0.isVirtual })?.name ?? "系统默认声卡"
-        }
-        return draft.outputUID
+        outputName(for: draft.outputUID)
+    }
+
+    private func outputName(for id: String) -> String {
+        if id == "default" { return "系统默认声卡" }
+        return snapshot.outputs.first(where: { $0.id == id })?.name ?? id
     }
 
     private var heroTitle: String {
-        if isRunning {
-            return "正在向 Mac 传输音频"
-        }
-        if isTaskBusy(status.phase) {
+        if isTaskBusy(status.phase) || status.phase == .failed {
             return status.stage.isEmpty ? status.phase.label : status.stage
         }
-        if status.phase == .failed {
-            return status.stage.isEmpty ? "音频连接异常" : status.stage
+        if isRunning { return "正在拾音" }
+        if snapshot.settings.transport == .wifi {
+            return snapshot.wifiAuto.connectedPhoneName == nil ? "等待 Wi-Fi 手机" : "已就绪"
         }
-        return "随时就绪"
+        guard let usbDevice else { return "等待 USB 手机" }
+        switch usbDevice.state {
+        case .online: return "已就绪"
+        case .unauthorized: return "等待 USB 调试授权"
+        case .offline, .reenumerating: return "等待手机重新连接"
+        }
     }
 
     private var heroSubtitle: String {
         if isRunning {
             return snapshot.receivedFrames == 0
-                ? "等待手机端首帧音频…"
-                : "音频流稳定推送中 · 累计接收 \(snapshot.receivedFrames.formatted()) 帧"
+                ? "等待手机传来音频"
+                : "\(deviceDisplayName) → 此 Mac · 已接收 \(snapshot.receivedFrames.formatted()) 帧"
         }
-        if !status.detail.isEmpty && status.phase != .stopped {
-            return status.detail
+        if !status.detail.isEmpty && status.phase != .stopped { return status.detail }
+        if snapshot.settings.transport == .wifi {
+            return snapshot.settings.wifiAutoConnect && snapshot.wifiAuto.phase != .off
+                ? snapshot.wifiAuto.message
+                : "让手机与 Mac 接入同一个局域网"
         }
-        let channelName = snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi 局域网"
-        return "通过 \(channelName) 传输手机麦克风信号至 Mac，支持耳机实时试听或作为会议虚拟麦克风。"
+        if usbDevice?.state == .online { return "\(deviceDisplayName) 已连接" }
+        return "用数据线连接手机，并在手机上允许 USB 调试"
     }
 
     // MARK: - Wi-Fi Candidates & Validation
@@ -276,27 +276,45 @@ struct MicrophoneWorkspaceView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                ZenWorkspaceHeroHeader(
-                    eyebrow: "麦克风输入",
-                    title: heroTitle,
-                    subtitle: heroSubtitle
+            VStack(alignment: .leading, spacing: 20) {
+                WorkspaceHeading(
+                    title: "手机麦克风",
+                    subtitle: "用 Android 手机为 Mac 拾音，支持本机试听和虚拟麦克风。"
                 )
 
-                heroMicrophoneCard
+                if let pair = snapshot.wifiAuto.pendingPair {
+                    wifiPairPromptBanner(pair)
+                }
 
+                microphonePanel
                 draftBarAndErrors
 
-                transportAndOutputCard
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 14) {
+                        transportAndOutputCard
+                            .frame(minWidth: 310)
+                        quickTuningSection
+                            .frame(width: 248)
+                    }
 
+                    VStack(spacing: 16) {
+                        transportAndOutputCard
+                        quickTuningSection
+                    }
+                }
+
+                if draft.transport == .wifi {
+                    VStack(alignment: .leading, spacing: 8) {
+                        settingsHeading("Wi-Fi 连接")
+                        VStack(spacing: 0) { wifiEndpointRows }
+                            .insetGroupSurface()
+                    }
+                }
+
+                advancedConnectionSection
                 audioOptionsCard
-
-                quickTuningSection
             }
-            .frame(maxWidth: 816, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 40)
-            .padding(.vertical, 30)
+            .workspaceMargins()
         }
         .onChange(of: snapshot.settingsSavedRevision) { _, _ in
             if awaitingSaveCompletion {
@@ -318,41 +336,33 @@ struct MicrophoneWorkspaceView: View {
         }
     }
 
-    // MARK: - Hero Card
+    // MARK: - Microphone status and input
 
-    private var heroMicrophoneCard: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack(alignment: .center, spacing: 18) {
-                LineArtMicIcon(
-                    strokeColor: isRunning ? palette.waveBarBlue : palette.textPrimary,
-                    size: 44
-                )
+    private var microphonePanel: some View {
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 14) {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(isRunning ? palette.waveBarBlue : palette.accentBlue)
+                    .frame(width: 50, height: 50)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(isRunning ? "\(deviceDisplayName) 麦克风 · 传输中" : "\(deviceDisplayName) 麦克风")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(palette.textPrimary)
-
-                    if isRunning {
-                        Text("PCM \(effectiveAudio.format.rawValue.uppercased()) · \(effectiveAudio.sampleRate) Hz · \(effectiveChannelsLabel)")
-                            .font(.system(size: 13, weight: .regular).monospacedDigit())
-                            .foregroundStyle(palette.textSecondary)
-                    } else {
-                        let transportDesc = snapshot.settings.transport == .usb ? "USB 有线连接" : "Wi-Fi 局域网传输"
-                        Text("\(transportDesc) · \(sampleRateKhzText) · \(effectiveChannelsLabel)")
-                            .font(.system(size: 13, weight: .regular))
-                            .foregroundStyle(palette.textSecondary)
-                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(heroTitle)
+                        .font(.title2.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text(heroSubtitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-                .layoutPriority(1)
 
-                Spacer(minLength: 16)
+                Spacer(minLength: 6)
 
-                ZenCapsuleActionButton(
+                SessionActionButton(
                     title: isStoppedOrFailed ? "开始拾音" : "停止拾音",
                     isStop: !isStoppedOrFailed,
-                    width: 144,
-                    height: 48,
                     isDisabled: status.phase == .stopping || snapshot.isSavingSettings
                 ) {
                     send(isStoppedOrFailed ? .start(.microphone) : .stop(.microphone))
@@ -363,50 +373,113 @@ struct MicrophoneWorkspaceView: View {
                 LiveWaveformWell(
                     telemetry: telemetry,
                     fallbackSamples: snapshot.waveform,
-                    fallbackLevel: snapshot.level,
-                    barCount: 48,
-                    showDbPill: true
+                    fallbackLevel: snapshot.level
                 )
-
-                Rectangle()
-                    .fill(palette.divider)
-                    .frame(height: 1)
-
-                activeFooterBar
+            } else {
+                ZenWaveformWell(samples: [], level: 0)
             }
 
-            if let errorCode = status.errorCode, !errorCode.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(palette.stopCrimson)
-                    Text("\(errorCode)：\(status.detail.isEmpty ? "请检查设备连接或前往诊断日志排障" : status.detail)")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(palette.stopCrimson)
+            HStack(spacing: 10) {
+                Label(snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi",
+                      systemImage: snapshot.settings.transport == .usb ? "cable.connector" : "wifi")
+                Text("PCM \(effectiveAudio.format.rawValue.uppercased()) · \(sampleRateKhzText) · \(effectiveChannelsLabel)")
+                    .monospacedDigit()
+
+                if isRunning {
+                    Spacer(minLength: 4)
+                    Text("\(snapshot.settings.purpose == .monitor ? "本机试听" : "虚拟麦克风") · \(selectedOutputShortName)")
+                        .lineLimit(1)
+                        .help(selectedOutputShortName)
                 }
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if let errorCode = status.errorCode, !errorCode.isEmpty {
+                Label("\(errorCode)：\(status.detail.isEmpty ? "请检查设备连接或查看诊断日志" : status.detail)",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(palette.stopCrimson)
+            }
         }
-        .padding(.horizontal, 32)
-        .padding(.vertical, 28)
-        .zenCard(isActive: isRunning, cornerRadius: 20)
+        .padding(18)
+        .background {
+            shape.fill(.regularMaterial)
+            shape.fill(RadialGradient(
+                colors: [palette.accentBlue.opacity(palette.isDark ? 0.20 : 0.12), .clear],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 420
+            ))
+        }
+        .overlay {
+            shape.strokeBorder(
+                LinearGradient(
+                    colors: [.white.opacity(palette.isDark ? 0.22 : 0.68), palette.border],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1
+            )
+            .allowsHitTesting(false)
+        }
     }
 
-    private var activeFooterBar: some View {
-        HStack(alignment: .center) {
-            HStack(spacing: 10) {
-                Text("当前输出")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(palette.textSecondary)
+    private func wifiPairPromptBanner(_ pair: WifiPairPrompt) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "wifi.badge.plus")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(palette.accentBlue)
 
-                Text("\(snapshot.settings.purpose == .monitor ? "本机试听" : "虚拟麦克风") · \(selectedOutputShortName)")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text("请求绑定 Wi-Fi 麦克风")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text(pair.phoneName)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                HStack(spacing: 6) {
+                    Text("确认两端显示的一致验证码：")
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textSecondary)
+                    Text(pair.code)
+                        .font(.system(size: 16, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(palette.accentBlue)
+                }
             }
 
-            Spacer()
+            Spacer(minLength: 12)
 
-            Text("通道：\(snapshot.settings.transport == .usb ? "USB 有线" : "Wi-Fi")")
-                .font(.system(size: 13, weight: .regular))
+            HStack(spacing: 8) {
+                Button("拒绝") {
+                    send(.rejectWifiPair(pair.requestID))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).stroke(palette.divider, lineWidth: 1))
                 .foregroundStyle(palette.textSecondary)
+
+                Button("允许并绑定") {
+                    send(.approveWifiPair(pair.requestID))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(palette.accentBlue))
+                .foregroundStyle(.white)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(palette.accentBlue.opacity(0.08))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(palette.accentBlue.opacity(0.35), lineWidth: 1)
         }
     }
 
@@ -540,165 +613,78 @@ struct MicrophoneWorkspaceView: View {
         }
     }
 
-    // MARK: - Transport & Output Settings Card
+    // MARK: - Connection and output
+
+    private let connectionControlWidth: CGFloat = 168
 
     private var transportAndOutputCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("传输与输出设置")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(palette.textSecondary)
-
-                Spacer()
-
-                if draft.transport == .wifi {
-                    Text("当前选择 Wi-Fi 直连")
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.textTertiary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            settingsHeading("连接与输出")
 
             VStack(spacing: 0) {
-                // Row 1: Transport Channel
                 settingRow(title: "传输通道", showDivider: true) {
-                    HStack(spacing: 0) {
-                        transportSegmentButton("USB 有线", transport: .usb)
-                        transportSegmentButton("Wi-Fi 局域网", transport: .wifi)
+                    ConnectionSegments(
+                        title: "传输通道",
+                        labels: ["USB", "Wi-Fi"],
+                        width: connectionControlWidth,
+                        selectedIndex: draft.transport == .usb ? 0 : 1
+                    ) { index in
+                        selectTransport(index == 0 ? .usb : .wifi)
                     }
-                    .padding(2)
-                    .frame(height: 32)
-                    .background(palette.segmentedTrack, in: Capsule())
                 }
 
-                // Row 2: Purpose
                 settingRow(title: "输出用途", showDivider: true) {
-                    HStack(spacing: 0) {
-                        purposeSegmentButton("本机试听", purpose: .monitor)
-                        purposeSegmentButton("虚拟麦克风", purpose: .virtualMicrophone)
+                    ConnectionSegments(
+                        title: "输出用途",
+                        labels: ["本机试听", "虚拟麦克风"],
+                        width: connectionControlWidth,
+                        selectedIndex: draft.purpose == .monitor ? 0 : 1
+                    ) { index in
+                        selectPurpose(index == 0 ? .monitor : .virtualMicrophone)
                     }
-                    .padding(2)
-                    .frame(height: 32)
-                    .background(palette.segmentedTrack, in: Capsule())
                 }
 
-                // Row 3: Output Device
-                settingRow(title: "目标声卡", showDivider: draft.transport == .wifi || showAdvancedConnection) {
+                settingRow(title: "目标声卡", showDivider: false) {
                     outputDeviceMenu
                 }
-
-                // WiFi specific rows (only visible in WiFi mode)
-                if draft.transport == .wifi {
-                    wifiEndpointRows
-                }
-
-                // Advanced connection rows (collapsible)
-                if showAdvancedConnection {
-                    advancedConnectionRows
-                }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(palette.cardBackground)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            }
+            .insetGroupSurface()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-            // Expand / Collapse Advanced Connection Options
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    showAdvancedConnection.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: showAdvancedConnection ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .bold))
-                    Text(showAdvancedConnection
-                        ? "收起高级连接选项"
-                        : (draft.transport == .usb ? "展开高级连接选项 (端口与监听范围)" : "展开 Wi-Fi 高级连接选项 (监听范围与端口)"))
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundStyle(palette.textSecondary)
+    private func selectTransport(_ transport: AudioTransport) {
+        guard draft.transport != transport else { return }
+        draft.transport = transport
+        if transport == .wifi {
+            let trimmed = draft.listenAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == "127.0.0.1" {
+                draft.listenAddress = "0.0.0.0"
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 4)
         }
     }
 
-    private func transportSegmentButton(_ title: String, transport: AudioTransport) -> some View {
-        let isSelected = draft.transport == transport
-        return Button {
-            guard draft.transport != transport else { return }
-            draft.transport = transport
-            if transport == .wifi {
-                let trimmed = draft.listenAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty || trimmed == "127.0.0.1" {
-                    draft.listenAddress = "0.0.0.0"
-                }
-            }
-        } label: {
-            Text(title)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? palette.textPrimary : palette.textSecondary)
-                .frame(width: 96, height: 28)
-                .background(
-                    Capsule()
-                        .fill(isSelected ? palette.cardBackground : Color.clear)
-                )
-                .contentShape(Capsule())
+    private func selectPurpose(_ purpose: OutputPurpose) {
+        guard draft.purpose != purpose else { return }
+        draft.purpose = purpose
+        if purpose == .virtualMicrophone,
+           let firstVirtual = snapshot.outputs.first(where: { $0.isVirtual }) {
+            draft.outputUID = firstVirtual.id
+        } else if purpose == .monitor {
+            draft.outputUID = "default"
         }
-        .buttonStyle(.plain)
-    }
-
-    private func purposeSegmentButton(_ title: String, purpose: OutputPurpose) -> some View {
-        let isSelected = draft.purpose == purpose
-        return Button {
-            guard draft.purpose != purpose else { return }
-            draft.purpose = purpose
-            if purpose == .virtualMicrophone,
-               let firstVirtual = snapshot.outputs.first(where: { $0.isVirtual }) {
-                draft.outputUID = firstVirtual.id
-            } else if purpose == .monitor {
-                draft.outputUID = "default"
-            }
-        } label: {
-            Text(title)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? palette.textPrimary : palette.textSecondary)
-                .frame(width: 92, height: 28)
-                .background(
-                    Capsule()
-                        .fill(isSelected ? palette.cardBackground : Color.clear)
-                )
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
     }
 
     private var outputDeviceMenu: some View {
-        Menu {
-            Button("系统默认声卡") {
-                draft.outputUID = "default"
-            }
-            if !snapshot.outputs.isEmpty {
-                Divider()
-                ForEach(snapshot.outputs) { output in
-                    Button(output.name) {
-                        draft.outputUID = output.id
-                    }
-                }
-            }
-            if draft.purpose == .virtualMicrophone {
-                Divider()
-                Button("虚拟声卡驱动指南…") {
-                    send(.openDriverHelp)
-                }
-            }
-        } label: {
-            dropdownPillLabel(selectedDraftOutputShortName)
-        }
-        .buttonStyle(.plain)
+        ConnectionOutputMenu(
+            width: connectionControlWidth,
+            value: selectedDraftOutputShortName,
+            selectedID: draft.outputUID,
+            outputs: snapshot.outputs,
+            showsDriverGuide: draft.purpose == .virtualMicrophone,
+            selectOutput: { draft.outputUID = $0 },
+            openDriverGuide: { send(.openDriverHelp) }
+        )
     }
 
     // MARK: - Wi-Fi Specific Inline Settings
@@ -712,9 +698,9 @@ struct MicrophoneWorkspaceView: View {
                         Button("自动使用监听网卡 (\(effectiveWifiListenAddress))") { draft.wifiHost = "" }
                         Button(effectiveWifiListenAddress) { draft.wifiHost = effectiveWifiListenAddress }
                     } label: {
-                        dropdownPillLabel("跟随监听网卡")
+                        menuLabel("跟随监听网卡")
                     }
-                    .buttonStyle(.plain)
+                    .controlSize(.small)
                 } else if !wifiListenCandidates.isEmpty {
                     Menu {
                         Button("留空自动识别") { draft.wifiHost = "" }
@@ -726,9 +712,9 @@ struct MicrophoneWorkspaceView: View {
                             Text("已保存不可用地址：\(SettingsValidator.normalizedWifiTargetHost(draft.wifiHost))（请改选上方有效网卡）")
                         }
                     } label: {
-                        dropdownPillLabel(isStaleWifiTargetAddress ? "已选地址不可用" : "选择活动网卡")
+                        menuLabel(isStaleWifiTargetAddress ? "已选地址不可用" : "选择活动网卡")
                     }
-                    .buttonStyle(.plain)
+                    .controlSize(.small)
                 }
 
                 TextField(
@@ -745,7 +731,7 @@ struct MicrophoneWorkspaceView: View {
             }
         }
 
-        settingRow(title: "Wi-Fi 会话配对码", showDivider: showAdvancedConnection) {
+        settingRow(title: "Wi-Fi 会话配对码", showDivider: false) {
             TextField("留空免配对码，或填 32 位十六进制", text: $draft.pairingCode)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12, design: .monospaced))
@@ -788,6 +774,18 @@ struct MicrophoneWorkspaceView: View {
         .padding(.bottom, 12)
     }
 
+    private var advancedConnectionSection: some View {
+        DisclosureGroup(isExpanded: $showAdvancedConnection) {
+            VStack(spacing: 0) { advancedConnectionRows }
+                .padding(.top, 8)
+        } label: {
+            Label("高级连接", systemImage: "point.3.connected.trianglepath.dotted")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .insetGroupSurface(cornerRadius: 14)
+    }
+
     // MARK: - Advanced Connection Rows (Collapsed by Default)
 
     @ViewBuilder
@@ -818,9 +816,9 @@ struct MicrophoneWorkspaceView: View {
                         Text("已选不可用地址：\(effectiveWifiListenAddress)（请改选有效接口）")
                     }
                 } label: {
-                    dropdownPillLabel(listenAddressLabel)
+                    menuLabel(listenAddressLabel)
                 }
-                .buttonStyle(.plain)
+                .controlSize(.small)
             }
         }
 
@@ -857,171 +855,129 @@ struct MicrophoneWorkspaceView: View {
     // MARK: - Audio Options (Expandable in page)
 
     private var audioOptionsCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    showAudioOptions.toggle()
+        DisclosureGroup(isExpanded: $showAudioOptions) {
+            VStack(spacing: 0) {
+                settingRow(title: "音频采样率", showDivider: true) {
+                    Menu {
+                        ForEach(Capabilities.sampleRates, id: \.self) { rate in
+                            Button(sampleRateText(rate)) {
+                                draft.audio.sampleRate = rate
+                            }
+                        }
+                    } label: {
+                        menuLabel(sampleRateText(draft.audio.sampleRate))
+                    }
+                    .controlSize(.small)
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: showAudioOptions ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(palette.textSecondary)
 
-                    Text("音频选项")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(palette.textPrimary)
+                settingRow(title: "声道配置", showDivider: true) {
+                    Menu {
+                        Button("单声道 (1 Channel)") { draft.audio.channels = 1 }
+                        Button("立体声 (2 Channels)") { draft.audio.channels = 2 }
+                    } label: {
+                        menuLabel(channelsText(draft.audio.channels))
+                    }
+                    .controlSize(.small)
+                }
 
-                    Spacer()
+                settingRow(title: "PCM 采样精度", showDivider: true) {
+                    Menu {
+                        ForEach(PCMFormat.allCases, id: \.self) { format in
+                            Button(formatText(format)) {
+                                draft.audio.format = format
+                            }
+                        }
+                    } label: {
+                        menuLabel("PCM \(draft.audio.format.rawValue.uppercased())")
+                    }
+                    .controlSize(.small)
+                }
 
-                    Text("\(sampleRateText(draft.audio.sampleRate)) · \(draft.audio.channels == 1 ? "单声道" : "立体声") · PCM \(draft.audio.format.rawValue.uppercased()) · \(draft.audio.source.label)")
-                        .font(.system(size: 11, weight: .regular).monospacedDigit())
-                        .foregroundStyle(palette.textTertiary)
-                        .lineLimit(1)
+                settingRow(title: "手机硬件音源", showDivider: false) {
+                    Menu {
+                        ForEach(RecordingSource.allCases, id: \.self) { source in
+                            Button(sourceText(source)) {
+                                draft.audio.source = source
+                            }
+                        }
+                    } label: {
+                        menuLabel(sourceText(draft.audio.source))
+                    }
+                    .controlSize(.small)
                 }
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 4)
-
-            if showAudioOptions {
-                VStack(spacing: 0) {
-                    settingRow(title: "音频采样率", showDivider: true) {
-                        Menu {
-                            ForEach(Capabilities.sampleRates, id: \.self) { rate in
-                                Button(sampleRateText(rate)) {
-                                    draft.audio.sampleRate = rate
-                                }
-                            }
-                        } label: {
-                            dropdownPillLabel(sampleRateText(draft.audio.sampleRate))
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    settingRow(title: "声道配置", showDivider: true) {
-                        Menu {
-                            Button("单声道 (1 Channel)") { draft.audio.channels = 1 }
-                            Button("立体声 (2 Channels)") { draft.audio.channels = 2 }
-                        } label: {
-                            dropdownPillLabel(channelsText(draft.audio.channels))
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    settingRow(title: "PCM 采样精度", showDivider: true) {
-                        Menu {
-                            ForEach(PCMFormat.allCases, id: \.self) { format in
-                                Button(formatText(format)) {
-                                    draft.audio.format = format
-                                }
-                            }
-                        } label: {
-                            dropdownPillLabel("PCM \(draft.audio.format.rawValue.uppercased())")
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    settingRow(title: "手机硬件音源", showDivider: false) {
-                        Menu {
-                            ForEach(RecordingSource.allCases, id: \.self) { source in
-                                Button(sourceText(source)) {
-                                    draft.audio.source = source
-                                }
-                            }
-                        } label: {
-                            dropdownPillLabel(sourceText(draft.audio.source))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(palette.cardBackground)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(palette.border, lineWidth: 1)
-                }
+            .padding(.top, 8)
+        } label: {
+            HStack {
+                Label("音频参数", systemImage: "slider.horizontal.3")
+                Spacer()
+                Text("\(sampleRateText(draft.audio.sampleRate)) · \(draft.audio.channels == 1 ? "单声道" : "立体声") · PCM \(draft.audio.format.rawValue.uppercased())")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .insetGroupSurface(cornerRadius: 14)
     }
 
-    // MARK: - Section 2: Quick Tuning Card (immediate effect)
+    // MARK: - Live controls
 
     private var quickTuningSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("快速调音")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(palette.textSecondary)
+        VStack(alignment: .leading, spacing: 8) {
+            settingsHeading("快速调音")
 
             VStack(spacing: 0) {
-                HStack(alignment: .center) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("静音 Mac 监听输出")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(palette.textPrimary)
-                        Text("仅关闭 Mac 播放，手机采音不受影响")
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundStyle(palette.textTertiary)
-                    }
-
-                    Spacer()
-
+                settingRow(title: "静音 Mac 监听", showDivider: true) {
                     Toggle("静音 Mac 监听输出", isOn: Binding(
                         get: { snapshot.settings.muted },
                         set: { send(.setMuted($0)) }
                     ))
                     .labelsHidden()
                     .toggleStyle(.switch)
+                    .help("仅关闭 Mac 播放，手机采音不受影响")
                 }
-                .padding(.horizontal, 28)
-                .frame(height: 88)
 
-                Rectangle()
-                    .fill(palette.divider)
-                    .frame(height: 1)
-                    .padding(.horizontal, 28)
-
-                HStack(alignment: .center) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("输入数字增益")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(palette.textPrimary)
-                        Text("实时放大或衰减采样信号")
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundStyle(palette.textTertiary)
-                    }
-
-                    Spacer()
-
-                    HStack(spacing: 16) {
-                        Slider(
-                            value: Binding(
-                                get: { snapshot.settings.gain },
-                                set: { send(.setGain($0)) }
-                            ),
-                            in: 0...4
-                        )
-                        .tint(palette.accentBlue)
-                        .frame(width: 180)
-
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text("输入增益")
+                            .fontWeight(.medium)
+                        Spacer()
                         Button {
                             send(.setGain(1.0))
                         } label: {
                             Text("\(snapshot.settings.gain, format: .number.precision(.fractionLength(2)))×")
-                                .font(.system(size: 13, weight: .semibold).monospacedDigit())
-                                .foregroundStyle(palette.textPrimary)
-                                .frame(width: 46, alignment: .trailing)
+                                .monospacedDigit()
                         }
-                        .buttonStyle(.plain)
-                        .help("点击重置为 1.00×")
+                        .buttonStyle(.glass)
+                        .controlSize(.small)
+                        .help("重置增益为 1.00×")
                     }
+
+                    Slider(value: Binding(
+                        get: { snapshot.settings.gain },
+                        set: { send(.setGain($0)) }
+                    ), in: 0...4) {
+                        Text("输入数字增益")
+                    }
+                    .labelsHidden()
+                    .help("实时放大或衰减采样信号")
                 }
-                .padding(.horizontal, 28)
-                .frame(height: 88)
+                .font(.callout)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 85)
             }
-            .zenCard(isActive: false, cornerRadius: 18)
+            .insetGroupSurface()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsHeading(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .accessibilityAddTraits(.isHeader)
+            .padding(.leading, 4)
     }
 
     // MARK: - Save Draft
@@ -1041,46 +997,154 @@ struct MicrophoneWorkspaceView: View {
         @ViewBuilder trailing: () -> Trailing
     ) -> some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 8) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-
-                Spacer()
-
+                    .font(.callout.weight(.medium))
+                    .layoutPriority(1)
+                Spacer(minLength: 0)
                 trailing()
             }
-            .padding(.horizontal, 20)
-            .frame(height: 46)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 42)
 
             if showDivider {
-                Rectangle()
-                    .fill(palette.divider)
-                    .frame(height: 1)
-                    .padding(.horizontal, 20)
+                Divider().padding(.horizontal, 14)
             }
         }
     }
 
-    private func dropdownPillLabel(_ text: String) -> some View {
-        HStack(spacing: 6) {
-            Text(text)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(palette.textPrimary)
-                .lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(palette.textSecondary)
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 28)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(palette.windowBackground)
+    private func menuLabel(_ text: String) -> some View {
+        Text(text)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+}
+
+private struct ConnectionSegments: NSViewRepresentable {
+    let title: String
+    let labels: [String]
+    let width: CGFloat
+    let selectedIndex: Int
+    let select: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(select: select) }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(
+            labels: labels,
+            trackingMode: .selectOne,
+            target: context.coordinator,
+            action: #selector(Coordinator.selectSegment(_:))
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(palette.border, lineWidth: 1)
+        control.segmentDistribution = .fillEqually
+        for index in labels.indices {
+            control.setWidth(width / CGFloat(labels.count), forSegment: index)
         }
+        control.setAccessibilityLabel(title)
+        if #available(macOS 27.0, *) {
+            control.role = .valueSelection
+        }
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.select = select
+        control.selectedSegment = selectedIndex
+        control.isEnabled = context.environment.isEnabled
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSegmentedControl, context: Context) -> CGSize? {
+        CGSize(width: width, height: nsView.intrinsicContentSize.height)
+    }
+
+    final class Coordinator: NSObject {
+        var select: (Int) -> Void
+
+        init(select: @escaping (Int) -> Void) { self.select = select }
+
+        @objc func selectSegment(_ control: NSSegmentedControl) {
+            if control.selectedSegment >= 0 { select(control.selectedSegment) }
+        }
+    }
+}
+
+private struct ConnectionOutputMenu: NSViewRepresentable {
+    let width: CGFloat
+    let value: String
+    let selectedID: String
+    let outputs: [OutputDevice]
+    let showsDriverGuide: Bool
+    let selectOutput: (String) -> Void
+    let openDriverGuide: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.setAccessibilityLabel("目标声卡")
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.selectOutput = selectOutput
+        coordinator.openDriverGuide = openDriverGuide
+        button.isEnabled = context.environment.isEnabled
+        button.setAccessibilityValue(value)
+
+        let choices = [OutputDevice(id: "default", name: "系统默认声卡", isVirtual: false)] + outputs
+        let content = MenuContent(value: value, selectedID: selectedID, choices: choices, showsDriverGuide: showsDriverGuide)
+        guard coordinator.content != content else { return }
+        coordinator.content = content
+
+        let menu = NSMenu()
+        menu.addItem(withTitle: value, action: nil, keyEquivalent: "")
+        for choice in choices {
+            let item = menu.addItem(
+                withTitle: choice.name,
+                action: #selector(Coordinator.chooseOutput(_:)),
+                keyEquivalent: ""
+            )
+            item.target = coordinator
+            item.representedObject = choice.id
+            item.state = choice.id == selectedID ? .on : .off
+            if choice.id == "default", !outputs.isEmpty {
+                menu.addItem(.separator())
+            }
+        }
+        if showsDriverGuide {
+            menu.addItem(.separator())
+            let item = menu.addItem(
+                withTitle: "虚拟声卡驱动指南…",
+                action: #selector(Coordinator.showGuide),
+                keyEquivalent: ""
+            )
+            item.target = coordinator
+        }
+        button.menu = menu
+        button.selectItem(at: 0)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
+        CGSize(width: width, height: nsView.intrinsicContentSize.height)
+    }
+
+    struct MenuContent: Equatable {
+        let value: String
+        let selectedID: String
+        let choices: [OutputDevice]
+        let showsDriverGuide: Bool
+    }
+
+    final class Coordinator: NSObject {
+        var content: MenuContent?
+        var selectOutput: ((String) -> Void)?
+        var openDriverGuide: (() -> Void)?
+
+        @objc func chooseOutput(_ item: NSMenuItem) {
+            if let id = item.representedObject as? String { selectOutput?(id) }
+        }
+
+        @objc func showGuide() { openDriverGuide?() }
     }
 }

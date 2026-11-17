@@ -10,27 +10,23 @@ struct DevicesWorkspaceView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                ZenWorkspaceHeroHeader(
-                    eyebrow: "硬件与授权",
-                    title: snapshot.devices.isEmpty
-                        ? "等待 Android 手机连接"
-                        : "已识别 \(snapshot.devices.count) 台 Android 手机",
+            VStack(alignment: .leading, spacing: 16) {
+                WorkspaceHeading(
+                    title: "设备与权限",
                     subtitle: snapshot.devices.isEmpty
-                        ? "请通过 USB 数据线连接 Android 手机，并在手机弹窗中点击「允许 USB 调试」。"
-                        : "已通过 USB 有线通道建立控制总线，设备与权限状态实时同步。"
+                        ? "查看 USB 调试状态、已绑定的 Wi-Fi 手机和手机权限。"
+                        : "已识别 \(snapshot.devices.count) 台 USB 设备。可在此管理 Wi-Fi 绑定和手机权限。"
                 )
 
                 deviceCardSection
+
+                wifiDevicesSection
 
                 permissionTableSection
 
                 adbHealthSection
             }
-            .frame(maxWidth: 816, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 40)
-            .padding(.vertical, 28)
+            .workspaceMargins()
         }
     }
 
@@ -119,6 +115,88 @@ struct DevicesWorkspaceView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Section: Wi-Fi 信任与自动连接设备
+
+    private var wifiDevicesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Wi-Fi 局域网配对与信任设备")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(palette.textSecondary)
+
+                Spacer()
+
+                Button {
+                    send(.setWifiAutoConnect(!snapshot.settings.wifiAutoConnect))
+                } label: {
+                    Text(snapshot.settings.wifiAutoConnect ? "停用 Wi-Fi 自动连接" : "启用 Wi-Fi 自动连接")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(palette.accentBlue)
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    Image(systemName: "wifi")
+                        .font(.system(size: 18))
+                        .foregroundStyle(snapshot.wifiAuto.phase == .failed ? palette.stopCrimson : palette.accentBlue)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(snapshot.wifiAuto.message)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(palette.textPrimary)
+
+                        if let connected = snapshot.wifiAuto.connectedPhoneName {
+                            Text("已连接：\(connected)")
+                                .font(.system(size: 12))
+                                .foregroundStyle(palette.emeraldGreen)
+                        }
+                    }
+
+                    Spacer()
+                }
+
+                if !snapshot.wifiAuto.trusted.isEmpty {
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("已信任并允许自动连接的手机（\(snapshot.wifiAuto.trusted.count)）")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(palette.textSecondary)
+
+                        ForEach(snapshot.wifiAuto.trusted) { phone in
+                            HStack {
+                                Image(systemName: "iphone")
+                                    .foregroundStyle(palette.textSecondary)
+
+                                Text(phone.name)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(palette.textPrimary)
+
+                                Text("(\(phone.id.prefix(8)))")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(palette.textTertiary)
+
+                                Spacer()
+
+                                Button("解除信任") {
+                                    send(.forgetWifiPhone(phone.id))
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 12))
+                                .foregroundStyle(palette.stopCrimson)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+            .padding(18)
+            .zenCard(isActive: snapshot.wifiAuto.connectedPhoneName != nil, cornerRadius: 16)
+        }
     }
 
     // MARK: - Section 2: 手机端系统权限状态
@@ -304,14 +382,13 @@ struct LogsWorkspaceView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
+            WorkspaceHeading(title: "诊断日志", subtitle: "查看连接事件、权限提示和错误记录。")
             filterToolbarCard
             logTableCard
         }
-        .frame(maxWidth: 816, maxHeight: .infinity, alignment: .topLeading)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.horizontal, 40)
-        .padding(.vertical, 24)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .workspaceMargins()
     }
 
     // MARK: - Filter Toolbar Card

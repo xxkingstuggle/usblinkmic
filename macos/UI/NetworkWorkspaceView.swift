@@ -64,15 +64,15 @@ struct NetworkWorkspaceView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                ZenWorkspaceHeroHeader(
-                    eyebrow: "网络互联",
-                    title: "USB 有线网络共享",
-                    subtitle: "提供「手机网络给 Mac (USB NCM 网卡)」与「Mac 网络给手机 (ADB 隧道 + VPN)」两种互斥有线供网方式。"
+            VStack(alignment: .leading, spacing: 16) {
+                WorkspaceHeading(
+                    title: "USB 网络共享",
+                    subtitle: "选择哪台设备提供网络。同一时间只能开启一个方向。"
                 )
 
                 phoneToMacCard
                 macToPhoneCard
+                chargingCard
 
                 HStack(alignment: .center, spacing: 12) {
                     Text("两个方向共用同一条 USB 链路，同一时间只能运行一个；切换方向前会自动停止当前方向。链路就绪仅代表本地接口或隧道已建立，不等同于公网出口已验证。")
@@ -109,11 +109,10 @@ struct NetworkWorkspaceView: View {
                     .padding(.horizontal, 4)
                 }
             }
-            .frame(maxWidth: 816, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 40)
-            .padding(.vertical, 30)
+            .workspaceMargins()
         }
+        .onAppear { send(.observeUSBCharging(true)) }
+        .onDisappear { send(.observeUSBCharging(false)) }
         .onChange(of: snapshot.settingsSavedRevision) { _, _ in
             if awaitingSaveCompletion {
                 draftDns = snapshot.settings.dns
@@ -137,6 +136,61 @@ struct NetworkWorkspaceView: View {
         }
     }
 
+    private var chargingCard: some View {
+        let charging = snapshot.usbCharging
+        let active = charging.phase == .charging || charging.phase == .full
+        let device = snapshot.devices.count > 1
+            ? snapshot.devices.first(where: { $0.id == charging.deviceID })?.name : nil
+        let title = ["手机充电", charging.batteryPercent.map { "\($0)%" }, device]
+            .compactMap { $0 }.joined(separator: " · ")
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: active ? "bolt.circle.fill" : "bolt.circle")
+                .font(.system(size: 22))
+                .foregroundStyle(active ? palette.accentBlue : palette.textSecondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                Text(chargingDetail(charging.phase))
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 6)
+            if charging.phase == .requesting {
+                ProgressView().controlSize(.small)
+            } else if charging.canRequest {
+                Button("尝试充电") { send(.requestUSBCharging) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+                    .disabled(isTaskBusy(snapshot.phoneInternet.phase) || isTaskBusy(snapshot.macInternet.phase)
+                              || snapshot.isSavingSettings)
+                    .help("尝试保留 USB 数据连接并切换供电方向；部分设备可能短暂重连。")
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
+        .zenCard(cornerRadius: 16)
+    }
+
+    private func chargingDetail(_ phase: USBChargingStatus.Phase) -> String {
+        switch phase {
+        case .disconnected: return "用数据线连接手机并允许 USB 调试。开启任一方向供网时会自动检查充电。"
+        case .checking: return "正在读取手机充电状态…"
+        case .requesting: return "正在请求手机接收 USB 供电…"
+        case .charging: return "正在通过 USB 充电"
+        case .full: return "已通过 USB 接电，电池已充满"
+        case .powered: return "已接入 USB 电源，系统未报告电池充电。"
+        case .notCharging: return "USB 未给电池充电，请检查线缆、扩展坞或手机充电限制。"
+        case .supplyingPower: return "手机正通过 USB 向外供电。开启供网时会自动尝试切换为受电。"
+        case .unsupported: return "手机正向外供电，当前连接不支持单独切换供电方向。"
+        case .unknown: return "暂时无法确认 USB 充电状态。"
+        case .unconfirmed: return "未确认切换成功，可检查 USB 连接后重试。"
+        }
+    }
+
     // MARK: - Card 1: 手机网络提供给 Mac (USB NCM)
 
     private var phoneToMacCard: some View {
@@ -153,12 +207,11 @@ struct NetworkWorkspaceView: View {
             "通过 Android USB NCM 虚拟网卡将手机蜂窝数据或 Wi-Fi 共享给 Mac"
         }
 
-        return VStack(alignment: .leading, spacing: 20) {
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("手机网络提供给 Mac (USB NCM)")
-                        .font(.system(size: 19, weight: .bold))
-                        .foregroundStyle(palette.textPrimary)
+                    Label("手机网络给 Mac", systemImage: "iphone")
+                        .font(.title3.weight(.semibold))
 
                     Text(subtitleText)
                         .font(.system(size: 13, weight: .regular))
@@ -167,11 +220,10 @@ struct NetworkWorkspaceView: View {
 
                 Spacer(minLength: 16)
 
-                ZenCapsuleActionButton(
+                SessionActionButton(
                     title: isStoppedOrFailed ? (status.phase == .failed ? "重试开启" : "开启供网") : "停止供网",
                     isStop: !isStoppedOrFailed,
-                    width: 138,
-                    height: 44,
+                    controlSize: .regular,
                     isDisabled: status.phase == .stopping || snapshot.isSavingSettings
                 ) {
                     send(isStoppedOrFailed ? .start(.phoneInternet) : .stop(.phoneInternet))
@@ -216,8 +268,7 @@ struct NetworkWorkspaceView: View {
                 }
             }
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 24)
+        .padding(18)
         .zenCard(isActive: isRunning, cornerRadius: 20)
     }
 
@@ -236,12 +287,11 @@ struct NetworkWorkspaceView: View {
             "通过 ADB USB 端口转发与手机端 VPN 服务，将 Mac 当前网络转发给 Android 手机"
         }
 
-        return VStack(alignment: .leading, spacing: 20) {
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Mac 网络共享给手机 (ADB 隧道 / VPN)")
-                        .font(.system(size: 19, weight: .bold))
-                        .foregroundStyle(palette.textPrimary)
+                    Label("Mac 网络给手机", systemImage: "laptopcomputer")
+                        .font(.title3.weight(.semibold))
 
                     Text(subtitleText)
                         .font(.system(size: 13, weight: .regular))
@@ -250,11 +300,10 @@ struct NetworkWorkspaceView: View {
 
                 Spacer(minLength: 16)
 
-                ZenCapsuleActionButton(
+                SessionActionButton(
                     title: isStoppedOrFailed ? (status.phase == .failed ? "重试开启" : "开启供网") : "停止供网",
                     isStop: !isStoppedOrFailed,
-                    width: 138,
-                    height: 44,
+                    controlSize: .regular,
                     isDisabled: status.phase == .stopping || snapshot.isSavingSettings
                 ) {
                     send(isStoppedOrFailed ? .start(.macInternet) : .stop(.macInternet))
@@ -380,8 +429,7 @@ struct NetworkWorkspaceView: View {
                 }
             }
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 24)
+        .padding(18)
         .zenCard(isActive: isRunning, cornerRadius: 20)
     }
 

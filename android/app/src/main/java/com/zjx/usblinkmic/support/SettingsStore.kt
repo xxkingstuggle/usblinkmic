@@ -31,7 +31,8 @@ class SettingsStore internal constructor(private val preferences: SharedPreferen
             controlPort = root.getInt("controlPort"),
             pairingCode = root.getString("pairingCode"),
             dns = root.getString("dns"),
-            routes = root.getString("routes")
+            routes = root.getString("routes"),
+            wifiAutoConnect = root.optBoolean("wifiAutoConnect", true)
         )
         val validationErrors = SettingsValidator.errors(settings)
         check(validationErrors.isEmpty()) {
@@ -60,6 +61,7 @@ class SettingsStore internal constructor(private val preferences: SharedPreferen
             .put("pairingCode", settings.pairingCode)
             .put("dns", settings.dns)
             .put("routes", settings.routes)
+            .put("wifiAutoConnect", settings.wifiAutoConnect)
 
         check(preferences.edit().putString(SETTINGS_KEY, json.toString()).commit()) {
             "Unable to persist settings"

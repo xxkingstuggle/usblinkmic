@@ -5,7 +5,8 @@ public enum LogRedactor {
     private static let structuredValuePatterns = [
         #"(?i)(\bserial\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#,
         #"(?i)(\btoken\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#,
-        #"(?i)(\bpairingCode\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#
+        #"(?i)(\bpairingCode\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#,
+        #"(?i)(\b(?:secret|sharedSecret|keyHex|pairingKey|audioToken|proof|nonce)\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#
     ]
     private static let homePathPattern = #"(?<![\w])(/Users/[^/\s]+(?:/[^\s"'<>]*)?|~/[^\s"'<>]*)"#
     private static let ipv4Pattern = #"(?<![A-Za-z0-9_.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![A-Za-z0-9_.])"#
