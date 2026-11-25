@@ -34,7 +34,7 @@ public final class WifiControlListener: @unchecked Sendable {
  private let onState: @Sendable (WifiListenerState) -> Void
  private var listener: NWListener?
  private var generation: UInt64 = 0
- private var open = 0
+ private var activeConnections: [UUID: WifiControlConnection] = [:]
 
  public init(service: WifiControlService, configuration: Configuration, onState: @escaping @Sendable (WifiListenerState) -> Void) {
   self.service = service; self.configuration = configuration; self.onState = onState
@@ -73,11 +73,17 @@ public final class WifiControlListener: @unchecked Sendable {
    created.newConnectionHandler = { [weak self] connection in
     guard let self else { connection.cancel(); return }
     self.queue.async { [weak self] in
-     guard let self, self.generation == current, self.open < Self.maximumConnections else { connection.cancel(); return }
-     self.open += 1
-     let wrapper = WifiControlConnection(connection: connection, service: self.service) { [weak self] in
-      self?.queue.async { self?.open = max(0, (self?.open ?? 1) - 1) }
+     guard let self, self.generation == current, self.activeConnections.count < Self.maximumConnections else {
+      connection.cancel()
+      return
      }
+     let connectionKey = UUID()
+     let wrapper = WifiControlConnection(connection: connection, service: self.service) { [weak self] in
+      self?.queue.async {
+       self?.activeConnections.removeValue(forKey: connectionKey)
+      }
+     }
+     self.activeConnections[connectionKey] = wrapper
      wrapper.start()
     }
    }
@@ -86,6 +92,7 @@ public final class WifiControlListener: @unchecked Sendable {
  }
 
  public var port: UInt16? { queue.sync { listener?.port?.rawValue } }
+ public var activeConnectionCount: Int { queue.sync { activeConnections.count } }
 
  public func stop() { queue.sync { stopLocked(); onState(.stopped) } }
 
@@ -95,6 +102,11 @@ public final class WifiControlListener: @unchecked Sendable {
   listener?.newConnectionHandler = nil
   listener?.cancel()
   listener = nil
+  let staleConnections = Array(activeConnections.values)
+  activeConnections.removeAll()
+  for connection in staleConnections {
+   connection.cancelImmediately()
+  }
  }
 }
 
@@ -114,53 +126,85 @@ final class WifiControlConnection: WifiPeerConnection, @unchecked Sendable {
  }
 
  func start() {
-  connection.stateUpdateHandler = { [weak self] state in
-   switch state {
-   case .failed, .cancelled: self?.notifyClosed()
-   default: break
+  queue.async {
+   guard !self.closedNotified else { return }
+   self.connection.stateUpdateHandler = { [weak self] state in
+    switch state {
+    case .failed, .cancelled:
+     self?.handleClosedOnQueue()
+    default:
+     break
+    }
    }
-  }
-  connection.start(queue: queue)
-  Task { @MainActor [self] in
-   guard connection.state != .cancelled else { return }
-   serviceID = service.connectionOpened(self)
-   queue.async { self.read() }
+   self.connection.start(queue: self.queue)
+   Task { @MainActor [weak self] in
+    guard let self else { return }
+    let canOpen = self.queue.sync { !self.closedNotified }
+    guard canOpen else { return }
+    let openedID = self.service.connectionOpened(self)
+    let registered = self.queue.sync { () -> Bool in
+     guard !self.closedNotified else { return false }
+     self.serviceID = openedID
+     self.readOnQueue()
+     return true
+    }
+    if !registered {
+     self.service.connectionClosed(openedID)
+    }
+   }
   }
  }
 
  func send(_ object: [String: Any]) {
   guard JSONSerialization.isValidJSONObject(object), var data = try? JSONSerialization.data(withJSONObject: object) else { return }
   data.append(10)
-  connection.send(content: data, completion: .contentProcessed { [weak self] error in
-   if error != nil { self?.close() }
-  })
- }
-
- func close() {
-  // Let a final error reply flush before the socket goes away.
-  connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
-   self?.connection.cancel()
-  })
-  queue.asyncAfter(deadline: .now() + 1) { [weak self] in
-   self?.connection.cancel()
-   self?.notifyClosed()
+  queue.async {
+   guard !self.closedNotified else { return }
+   self.connection.send(content: data, completion: .contentProcessed { [weak self] error in
+    if error != nil { self?.close() }
+   })
   }
  }
 
- private func notifyClosed() {
+ func close() {
   queue.async {
    guard !self.closedNotified else { return }
-   self.closedNotified = true
-   self.finished()
-   if let id = self.serviceID {
-    Task { @MainActor in self.service.connectionClosed(id) }
+   // Let a final error reply flush before the socket goes away.
+   self.connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
+    self?.connection.cancel()
+   })
+   self.queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+    self?.connection.cancel()
+    self?.handleClosedOnQueue()
    }
   }
  }
 
- private func read() {
+ func cancelImmediately() {
+  queue.async {
+   self.connection.stateUpdateHandler = nil
+   self.connection.cancel()
+   self.handleClosedOnQueue()
+  }
+ }
+
+ private func handleClosedOnQueue() {
+  guard !closedNotified else { return }
+  closedNotified = true
+  let id = serviceID
+  serviceID = nil
+  finished()
+  if let id {
+   Task { @MainActor [service] in
+    service.connectionClosed(id)
+   }
+  }
+ }
+
+ private func readOnQueue() {
+  guard !closedNotified else { return }
   connection.receive(minimumIncompleteLength: 1, maximumLength: 2048) { [weak self] data, _, isComplete, error in
-   guard let self else { return }
+   guard let self, !self.closedNotified else { return }
    if let data { self.buffer.append(data) }
    var messages: [[String: Any]] = []
    while let newline = self.buffer.firstIndex(of: 10) {
@@ -168,17 +212,39 @@ final class WifiControlConnection: WifiPeerConnection, @unchecked Sendable {
     self.buffer = Data(self.buffer.suffix(from: self.buffer.index(after: newline)))
     guard line.count <= WifiControlListener.maximumLineBytes,
           let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
-     self.connection.cancel(); return
+     self.connection.cancel()
+     self.handleClosedOnQueue()
+     return
     }
     messages.append(object)
    }
-   if self.buffer.count > WifiControlListener.maximumLineBytes { self.connection.cancel(); return }
-   if error != nil || isComplete && messages.isEmpty { self.connection.cancel(); return }
-   guard let id = self.serviceID else { self.connection.cancel(); return }
+   if self.buffer.count > WifiControlListener.maximumLineBytes {
+    self.connection.cancel()
+    self.handleClosedOnQueue()
+    return
+   }
+   if error != nil || (isComplete && messages.isEmpty) {
+    self.connection.cancel()
+    self.handleClosedOnQueue()
+    return
+   }
+   guard let id = self.serviceID else {
+    self.connection.cancel()
+    self.handleClosedOnQueue()
+    return
+   }
    let ended = isComplete
    Task { @MainActor in
     for message in messages { await self.service.receive(message, on: id) }
-    self.queue.async { if ended { self.connection.cancel() } else { self.read() } }
+    self.queue.async {
+     guard !self.closedNotified else { return }
+     if ended {
+      self.connection.cancel()
+      self.handleClosedOnQueue()
+     } else {
+      self.readOnQueue()
+     }
+    }
    }
   }
  }

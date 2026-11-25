@@ -287,7 +287,7 @@ private final class AudioDelivery: @unchecked Sendable {
     log(module.rawValue,"userAction","source=\(source.rawValue), action=start, device=\(deviceAlias(snapshot.selectedDeviceID ?? "")), transport=\(snapshot.settings.transport.rawValue)")
     if module == .microphone {
      wifiService?.pausedByUser = false
-     if snapshot.settings.transport == .wifi {
+     if wifiAutoConnectHost, snapshot.settings.transport == .wifi {
       startWifiMicrophone(source: source)
       return
      }
@@ -1908,7 +1908,7 @@ private final class AudioDelivery: @unchecked Sendable {
  private func performShutdown(timeout:TimeInterval) async -> Bool {
   quitting=true
   manualChargingRequest?.cancel();chargingProbe?.cancel()
-  wifiListener?.stop();wifiTicker?.cancel();wifiTicker=nil
+  wifiListener?.stop();wifiListener=nil;wifiTicker?.cancel();wifiTicker=nil
   await wifiService?.shutdown()
   log("shutdown","started","timeout=\(String(format:"%.2f",timeout))s, owned=[\(owned.keys.map(\.rawValue).sorted().joined(separator:","))]")
   revokeMicrophoneIntent("shutdown")
@@ -2083,7 +2083,13 @@ extension SessionController: WifiSessionHost {
   }
   wifiService=created;wifiListener=listener
   do{try listener.start();log("wifi","listenerStart","Wi-Fi 自动连接监听已启动；advertise=\(wifiAdvertise)")}
-  catch{wifiListenerState = .failed(error.localizedDescription);log("wifi","listenerFailed",error.localizedDescription)}
+  catch{
+   wifiListener?.stop();wifiListener=nil;wifiService=nil
+   wifiListenerState = .failed(error.localizedDescription)
+   log("wifi","listenerFailed",error.localizedDescription)
+   refreshWifiSnapshot()
+   return
+  }
   wifiTicker=Task {[weak self] in
    while !Task.isCancelled {
     try? await Task.sleep(nanoseconds:1_000_000_000)

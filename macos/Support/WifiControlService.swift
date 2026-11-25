@@ -109,6 +109,7 @@ public protocol WifiPeerConnection: AnyObject {
  public var connectedPhoneName: String? { active?.phoneName ?? connections.values.first(where: { $0.phase == .authenticated })?.phoneName }
  public var hasActiveSession: Bool { active != nil }
  public var hasAuthenticatedConnection: Bool { connections.values.contains(where: { $0.phase == .authenticated }) }
+ public var openConnectionCount: Int { connections.count }
  public func activePhoneID() -> String? { active?.phoneID }
  public func authenticatedPhoneID() -> String? { active?.phoneID ?? connections.values.first(where: { $0.phase == .authenticated })?.phoneID }
  public func activeSessionID() -> String? { active?.id }

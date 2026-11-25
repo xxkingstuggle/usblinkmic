@@ -2,37 +2,50 @@ import Darwin
 import Foundation
 
 public enum LogRedactor {
-    private static let structuredValuePatterns = [
+    private static let structuredValueRegexes: [NSRegularExpression] = [
         #"(?i)(\bserial\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#,
         #"(?i)(\btoken\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#,
         #"(?i)(\bpairingCode\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#,
         #"(?i)(\b(?:secret|sharedSecret|keyHex|pairingKey|audioToken|proof|nonce)\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}\]\)]+)"#
-    ]
-    private static let homePathPattern = #"(?<![\w])(/Users/[^/\s]+(?:/[^\s"'<>]*)?|~/[^\s"'<>]*)"#
-    private static let ipv4Pattern = #"(?<![A-Za-z0-9_.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![A-Za-z0-9_.])"#
-    private static let ipv6CandidatePattern = #"(?<![A-Fa-f0-9:.])[A-Fa-f0-9:.]+(?:%[A-Za-z0-9_.-]+)?(?![A-Fa-f0-9:.])"#
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+    private static let jsonSecretRegex = try? NSRegularExpression(
+        pattern: #"(?i)("(?:serial|token|pairingCode|secret|sharedSecret|keyHex|pairingKey|audioToken|proof|nonce)"\s*:\s*)"[^"\r\n]*""#
+    )
+    private static let homePathRegex = try? NSRegularExpression(
+        pattern: #"(?<![\w])(/Users/[^/\s]+(?:/[^\s"'<>]*)?|~/[^\s"'<>]*)"#
+    )
+    private static let macAddressRegex = try? NSRegularExpression(
+        pattern: #"(?i)(?<![a-f0-9:])(?:[a-f0-9]{2}:){5}[a-f0-9]{2}(?![a-f0-9:])"#
+    )
+    private static let ipv4Regex = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![A-Za-z0-9_.])"#
+    )
+    private static let ipv6CandidateRegex = try? NSRegularExpression(
+        pattern: #"(?<![A-Fa-f0-9:.])[A-Fa-f0-9:.]+(?:%[A-Za-z0-9_.-]+)?(?![A-Fa-f0-9:.])"#
+    )
 
     public static func redact(_ text: String) -> String {
         var result = text
-        for pattern in structuredValuePatterns {
-            result = replacingMatches(in: result, pattern: pattern, template: "$1[REDACTED]")
+        for regex in structuredValueRegexes {
+            result = replacingMatches(in: result, regex: regex, template: "$1[REDACTED]")
         }
-        result = replacingMatches(in: result, pattern: homePathPattern, template: "[HOME]")
-        result = replacingMatches(in: result, pattern: #"(?i)(?<![a-f0-9:])(?:[a-f0-9]{2}:){5}[a-f0-9]{2}(?![a-f0-9:])"#, template: "[MAC]")
+        result = replacingMatches(in: result, regex: jsonSecretRegex, template: #"$1"[REDACTED]""#)
+        result = replacingMatches(in: result, regex: homePathRegex, template: "[HOME]")
+        result = replacingMatches(in: result, regex: macAddressRegex, template: "[MAC]")
         result = replacingIPv4Addresses(in: result)
         result = replacingIPv6Addresses(in: result)
         return result
     }
 
-    private static func replacingMatches(in text: String, pattern: String, template: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return text }
+    private static func replacingMatches(in text: String, regex: NSRegularExpression?, template: String) -> String {
+        guard let regex else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return expression.stringByReplacingMatches(in: text, range: range, withTemplate: template)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: template)
     }
 
     private static func replacingIPv4Addresses(in text: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: ipv4Pattern) else { return text }
-        let matches = expression.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        guard let regex = ipv4Regex else { return text }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
         var result = text
         for match in matches.reversed() {
             guard let range = Range(match.range, in: result), isIPv4Address(String(result[range])) else { continue }
@@ -42,8 +55,8 @@ public enum LogRedactor {
     }
 
     private static func replacingIPv6Addresses(in text: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: ipv6CandidatePattern) else { return text }
-        let matches = expression.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        guard let regex = ipv6CandidateRegex else { return text }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
         var result = text
         for match in matches.reversed() {
             guard let range = Range(match.range, in: result) else { continue }
