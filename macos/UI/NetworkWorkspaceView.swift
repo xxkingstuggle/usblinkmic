@@ -4,6 +4,7 @@ import Support
 
 struct NetworkWorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snapshot: AppSnapshot
     let send: (UserAction) -> Void
 
@@ -358,8 +359,12 @@ struct NetworkWorkspaceView: View {
             // Expandable in-page DNS and Routes settings
             VStack(alignment: .leading, spacing: 10) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    if reduceMotion {
                         showAdvancedNetwork.toggle()
+                    } else {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            showAdvancedNetwork.toggle()
+                        }
                     }
                 } label: {
                     HStack(spacing: 6) {

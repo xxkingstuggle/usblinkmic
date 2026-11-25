@@ -78,6 +78,7 @@ struct MicrophoneSettingsDraft: Equatable {
 
 struct MicrophoneWorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let snapshot: AppSnapshot
     var telemetry: AudioTelemetry? = nil
     let send: (UserAction) -> Void
@@ -346,7 +347,13 @@ struct MicrophoneWorkspaceView: View {
                     .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(isRunning ? palette.waveBarBlue : palette.accentBlue)
                     .frame(width: 50, height: 50)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .background {
+                        if reduceTransparency {
+                            RoundedRectangle(cornerRadius: 16).fill(palette.windowBackground)
+                        } else {
+                            RoundedRectangle(cornerRadius: 16).fill(.regularMaterial)
+                        }
+                    }
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -404,7 +411,11 @@ struct MicrophoneWorkspaceView: View {
         }
         .padding(18)
         .background {
-            shape.fill(.regularMaterial)
+            if reduceTransparency {
+                shape.fill(palette.cardBackground)
+            } else {
+                shape.fill(.regularMaterial)
+            }
             shape.fill(RadialGradient(
                 colors: [palette.accentBlue.opacity(palette.isDark ? 0.20 : 0.12), .clear],
                 center: .topLeading,

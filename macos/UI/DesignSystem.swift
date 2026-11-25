@@ -33,6 +33,24 @@ public enum SidebarSection: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    public var shortcutKey: KeyEquivalent {
+        switch self {
+        case .microphone: "1"
+        case .network: "2"
+        case .devices: "3"
+        case .logs: "4"
+        }
+    }
+
+    public var shortcutHint: String {
+        switch self {
+        case .microphone: "⌘1"
+        case .network: "⌘2"
+        case .devices: "⌘3"
+        case .logs: "⌘4"
+        }
+    }
+
     /// Workspace still names the runtime tasks that start/stop, not the pages.
     /// Mapping keeps the two in sync without a second source of truth.
     public init(workspace: Workspace) {
@@ -309,6 +327,7 @@ public struct ZenPalette {
 
 private struct ZenCardModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let isActive: Bool
     let cornerRadius: CGFloat
 
@@ -316,9 +335,18 @@ private struct ZenCardModifier: ViewModifier {
         let palette = ZenPalette(colorScheme)
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
-            .background(.regularMaterial, in: shape)
+            .background {
+                if reduceTransparency {
+                    shape.fill(palette.cardBackground)
+                } else {
+                    shape.fill(.regularMaterial)
+                }
+            }
             .overlay {
-                shape.strokeBorder(isActive ? palette.activeBorder : palette.border, lineWidth: 1)
+                shape.strokeBorder(
+                    isActive ? palette.activeBorder : (reduceTransparency ? palette.divider : palette.border),
+                    lineWidth: 1
+                )
                     .allowsHitTesting(false)
             }
     }
@@ -453,6 +481,8 @@ struct SessionActionButton: View {
 
 public struct ZenWaveformWell: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     public let samples: [Double]
     public let level: Double
     public var barCount: Int = 48
@@ -479,7 +509,12 @@ public struct ZenWaveformWell: View {
 
     public var body: some View {
         let palette = ZenPalette(colorScheme)
-        let bars = Self.normalizedBars(from: samples, level: level, targetCount: barCount)
+        let bars = Self.normalizedBars(
+            from: samples,
+            level: level,
+            targetCount: barCount,
+            reduceMotion: reduceMotion
+        )
         VStack(alignment: .leading, spacing: 3) {
             if showDbPill {
                 HStack {
@@ -515,15 +550,37 @@ public struct ZenWaveformWell: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(palette.recessedWell, in: RoundedRectangle(cornerRadius: 14))
+        .background(
+            reduceTransparency ? Color(nsColor: .underPageBackgroundColor) : palette.recessedWell,
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+        .overlay {
+            if reduceTransparency {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(palette.divider, lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("输入电平 \(dbText)")
     }
 
-    public static func normalizedBars(from input: [Double], level: Double, targetCount: Int) -> [Double] {
+    public static func normalizedBars(
+        from input: [Double],
+        level: Double,
+        targetCount: Int,
+        reduceMotion: Bool = false
+    ) -> [Double] {
         guard targetCount > 0 else { return [] }
+        let clampedLevel = level.isFinite ? min(max(level, 0), 1) : 0
+        if reduceMotion {
+            let average = input.isEmpty
+                ? clampedLevel
+                : min(1, max(clampedLevel, input.reduce(0) { $0 + ($1.isFinite ? abs($1) : 0) } / Double(input.count)))
+            return Array(repeating: average, count: targetCount)
+        }
         guard !input.isEmpty else {
-            return Array(repeating: level.isFinite ? min(max(level, 0), 1) : 0, count: targetCount)
+            return Array(repeating: clampedLevel, count: targetCount)
         }
         return (0..<targetCount).map { index in
             let position = Double(index) * Double(input.count - 1) / Double(max(targetCount - 1, 1))

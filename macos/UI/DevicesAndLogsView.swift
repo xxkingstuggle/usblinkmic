@@ -1,5 +1,7 @@
+import AppKit
 import SwiftUI
 import Contracts
+import Support
 
 struct DevicesWorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -8,15 +10,31 @@ struct DevicesWorkspaceView: View {
 
     private var palette: ZenPalette { ZenPalette(colorScheme) }
 
+    static func effectiveSelectedDeviceID(for snapshot: AppSnapshot) -> String? {
+        if let selected = snapshot.selectedDeviceID,
+           snapshot.devices.contains(where: { $0.id == selected }) {
+            return selected
+        }
+        return snapshot.devices.first?.id
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                WorkspaceHeading(
-                    title: "设备与权限",
-                    subtitle: snapshot.devices.isEmpty
-                        ? "查看 USB 调试状态、已绑定的 Wi-Fi 手机和手机权限。"
-                        : "已识别 \(snapshot.devices.count) 台 USB 设备。可在此管理 Wi-Fi 绑定和手机权限。"
-                )
+                HStack(alignment: .bottom, spacing: 12) {
+                    WorkspaceHeading(
+                        title: "设备与权限",
+                        subtitle: snapshot.devices.isEmpty
+                            ? "查看 USB 调试状态、已绑定的 Wi-Fi 手机和手机权限。"
+                            : "已识别 \(snapshot.devices.count) 台 USB 设备。可在此选择目标设备并管理 Wi-Fi 绑定与手机权限。"
+                    )
+
+                    Spacer(minLength: 8)
+
+                    if !snapshot.devices.isEmpty {
+                        compactRescanButton
+                    }
+                }
 
                 deviceCardSection
 
@@ -33,7 +51,8 @@ struct DevicesWorkspaceView: View {
     // MARK: - Device Card
 
     private var deviceCardSection: some View {
-        VStack(spacing: 12) {
+        let effectiveSelectedID = Self.effectiveSelectedDeviceID(for: snapshot)
+        return VStack(spacing: 12) {
             if snapshot.devices.isEmpty {
                 HStack(alignment: .center, spacing: 20) {
                     LineArtPhoneIcon(strokeColor: palette.textSecondary)
@@ -61,36 +80,78 @@ struct DevicesWorkspaceView: View {
                 .zenCard(isActive: false, cornerRadius: 20)
             } else {
                 ForEach(snapshot.devices) { device in
-                    let isSelected = device.id == snapshot.selectedDeviceID || snapshot.selectedDeviceID == nil
+                    let isSelected = device.id == effectiveSelectedID
                     HStack(alignment: .center, spacing: 20) {
-                        LineArtPhoneIcon(strokeColor: palette.textPrimary)
+                        LineArtPhoneIcon(strokeColor: isSelected ? palette.accentBlue : palette.textSecondary)
 
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(device.name)
-                                .font(.system(size: 19, weight: .bold))
-                                .foregroundStyle(palette.textPrimary)
+                            HStack(spacing: 8) {
+                                Text(device.name)
+                                    .font(.system(size: 19, weight: .bold))
+                                    .foregroundStyle(palette.textPrimary)
+                                    .lineLimit(1)
 
-                            Text("序列号：\(device.id) · 物理接口：USB 有线直连 · \(device.state.label)")
+                                StatusPill(
+                                    label: device.state.label,
+                                    tint: device.state == .online ? palette.emeraldGreen : .orange
+                                )
+                            }
+
+                            Text("序列号：\(device.id) · 物理接口：USB 有线直连")
                                 .font(.system(size: 12).monospacedDigit())
                                 .foregroundStyle(palette.textSecondary)
 
-                            Button {
-                                send(.selectDevice(device.id))
-                            } label: {
-                                Text(isSelected ? "已选为主要采音与网络桥接设备" : "点击设为当前目标设备 (\(device.state.label))")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(isSelected ? palette.emeraldGreen : palette.accentBlue)
-                            }
-                            .buttonStyle(.plain)
+                            Text(
+                                isSelected
+                                    ? "已选为主要采音与网络桥接设备"
+                                    : (device.state == .online ? "已连接 · 可随时切换为当前目标设备" : "\(device.state.label) · 切换后可查看对应指引")
+                            )
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(isSelected ? palette.emeraldGreen : palette.textTertiary)
                         }
 
                         Spacer(minLength: 16)
 
-                        rescanButton
+                        if isSelected {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("当前目标")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .foregroundStyle(palette.emeraldGreen)
+                            .padding(.horizontal, 12)
+                            .frame(height: 34)
+                            .background(
+                                palette.emeraldGreen.opacity(palette.isDark ? 0.18 : 0.12),
+                                in: Capsule()
+                            )
+                            .accessibilityLabel("\(device.name) 已选为当前目标设备")
+                        } else {
+                            Button {
+                                send(.selectDevice(device.id))
+                            } label: {
+                                Text("设为当前目标")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(palette.accentBlue)
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 34)
+                                    .background(
+                                        palette.accentBlue.opacity(palette.isDark ? 0.18 : 0.10),
+                                        in: Capsule()
+                                    )
+                                    .overlay {
+                                        Capsule()
+                                            .strokeBorder(palette.accentBlue.opacity(0.35), lineWidth: 1)
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("将 \(device.name) 设为当前目标设备")
+                        }
                     }
                     .padding(.horizontal, 28)
                     .padding(.vertical, 22)
-                    .zenCard(isActive: false, cornerRadius: 20)
+                    .zenCard(isActive: isSelected, cornerRadius: 20)
                 }
             }
         }
@@ -115,6 +176,30 @@ struct DevicesWorkspaceView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .help("重新扫描 USB 设备 (⌘R)")
+    }
+
+    private var compactRescanButton: some View {
+        Button {
+            send(.refresh)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("重新扫描")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(palette.textPrimary)
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(palette.cardBackground, in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(palette.border, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .help("重新扫描 USB 设备 (⌘R)")
     }
 
     // MARK: - Section: Wi-Fi 信任与自动连接设备
@@ -336,34 +421,62 @@ struct DevicesWorkspaceView: View {
 
 struct LogsWorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let snapshot: AppSnapshot
     let send: (UserAction) -> Void
 
     @State private var selectedFilter: LogFilter = .all
     @State private var searchQuery: String = ""
+    @State private var copiedFeedback = false
 
     private var palette: ZenPalette { ZenPalette(colorScheme) }
 
     enum LogFilter: String, CaseIterable, Identifiable {
         case all = "全部"
-        case audio = "音频麦克风"
-        case network = "网络共享"
-        case system = "设备恢复"
+        case audio = "音频"
+        case network = "网络"
+        case wifi = "Wi-Fi"
+        case system = "系统"
 
         var id: String { rawValue }
 
         func matches(_ module: String) -> Bool {
+            let normalized = module.lowercased()
             switch self {
             case .all:
                 return true
             case .audio:
-                return module == "audio" || module == "microphone"
+                return normalized == "audio" || normalized == "microphone"
             case .network:
-                return module == "phoneInternet" || module == "macInternet"
+                return normalized == "phoneinternet" || normalized == "macinternet" || normalized == "network"
+            case .wifi:
+                return normalized == "wifi" || normalized == "wifiauto"
             case .system:
-                return !["audio", "microphone", "phoneInternet", "macInternet"].contains(module)
+                return !["audio", "microphone", "phoneinternet", "macinternet", "network", "wifi", "wifiauto"].contains(normalized)
             }
         }
+    }
+
+    static func filteredEntries(_ logs: [LogEntry], filter: LogFilter, query: String) -> [LogEntry] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return logs.reversed().filter { entry in
+            guard filter.matches(entry.module) else { return false }
+            guard !trimmed.isEmpty else { return true }
+            return entry.module.lowercased().contains(trimmed)
+                || entry.stage.lowercased().contains(trimmed)
+                || entry.message.lowercased().contains(trimmed)
+        }
+    }
+
+    static func formattedRedactedLogs(_ entries: [LogEntry]) -> String {
+        let header = "# USBLinkMic Diagnostics (Redacted) v=\(Capabilities.version) count=\(entries.count)"
+        let lines = entries.map { entry in
+            let module = LogRedactor.redact(entry.module)
+            let stage = LogRedactor.redact(entry.stage)
+            let message = LogRedactor.redact(entry.message)
+            return "\(entry.date.ISO8601Format()) \(module) \(stage) \(message)"
+        }
+        return ([header] + lines).joined(separator: "\n") + "\n"
     }
 
     private func count(for filter: LogFilter) -> Int {
@@ -371,19 +484,37 @@ struct LogsWorkspaceView: View {
     }
 
     private var filteredLogs: [LogEntry] {
-        snapshot.logs.reversed().filter { entry in
-            guard selectedFilter.matches(entry.module) else { return false }
-            guard !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty else { return true }
-            let query = searchQuery.lowercased()
-            return entry.module.lowercased().contains(query)
-                || entry.stage.lowercased().contains(query)
-                || entry.message.lowercased().contains(query)
+        Self.filteredEntries(snapshot.logs, filter: selectedFilter, query: searchQuery)
+    }
+
+    private func copyRedactedLogs() {
+        let entries = filteredLogs
+        guard !entries.isEmpty else { return }
+        let text = Self.formattedRedactedLogs(entries)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        if reduceMotion {
+            copiedFeedback = true
+        } else {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                copiedFeedback = true
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            if reduceMotion {
+                copiedFeedback = false
+            } else {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    copiedFeedback = false
+                }
+            }
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            WorkspaceHeading(title: "诊断日志", subtitle: "查看连接事件、权限提示和错误记录。")
+            WorkspaceHeading(title: "诊断日志", subtitle: "按模块与关键字实时检索连接事件、权限提示与错误记录，复制与导出均自动脱敏。")
             filterToolbarCard
             logTableCard
         }
@@ -394,7 +525,7 @@ struct LogsWorkspaceView: View {
     // MARK: - Filter Toolbar Card
 
     private var filterToolbarCard: some View {
-        HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 ForEach(LogFilter.allCases) { filter in
                     let isSelected = selectedFilter == filter
@@ -404,57 +535,68 @@ struct LogsWorkspaceView: View {
                         Text("\(filter.rawValue) (\(count(for: filter)))")
                             .font(.system(size: 12, weight: isSelected ? .bold : .medium).monospacedDigit())
                             .foregroundStyle(isSelected ? palette.accentBlue : palette.textSecondary)
-                            .padding(.horizontal, 12)
-                            .frame(height: 32)
+                            .padding(.horizontal, 11)
+                            .frame(height: 30)
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(isSelected ? palette.accentBlue.opacity(palette.isDark ? 0.22 : 0.12) : Color.clear)
+                                    .fill(isSelected ? palette.accentBlue.opacity(palette.isDark ? 0.22 : 0.12) : palette.cardBackground)
                             )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(isSelected ? palette.accentBlue.opacity(0.45) : palette.border, lineWidth: 1)
+                            }
+                            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .buttonStyle(.plain)
                 }
+                Spacer(minLength: 0)
             }
 
-            Spacer(minLength: 8)
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11))
+                        .foregroundStyle(palette.textTertiary)
 
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.textTertiary)
+                    TextField("过滤关键字、模块或错误码...", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(palette.textPrimary)
 
-                TextField("过滤关键字或错误码...", text: $searchQuery)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.textPrimary)
-
-                if !searchQuery.isEmpty {
-                    Button {
-                        searchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.textTertiary)
+                    if !searchQuery.isEmpty {
+                        Button {
+                            searchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(palette.textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("清空搜索关键字")
                     }
-                    .buttonStyle(.plain)
                 }
-            }
-            .padding(.horizontal, 12)
-            .frame(width: 196, height: 32)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(palette.windowBackground)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(palette.border, lineWidth: 1)
-            }
+                .padding(.horizontal, 12)
+                .frame(minWidth: 160, maxWidth: .infinity)
+                .frame(height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(palette.windowBackground)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(palette.border, lineWidth: 1)
+                }
 
-            Button {
-                send(.exportLogs)
-            } label: {
-                Text("导出 ↻")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
+                Button {
+                    copyRedactedLogs()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: copiedFeedback ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(copiedFeedback ? "已复制脱敏日志" : "复制脱敏")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(copiedFeedback ? palette.emeraldGreen : palette.accentBlue)
                     .padding(.horizontal, 12)
                     .frame(height: 32)
                     .background(
@@ -463,33 +605,55 @@ struct LogsWorkspaceView: View {
                     )
                     .overlay {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(palette.border, lineWidth: 1)
+                            .strokeBorder(copiedFeedback ? palette.emeraldGreen.opacity(0.5) : palette.border, lineWidth: 1)
                     }
-            }
-            .buttonStyle(.plain)
+                }
+                .buttonStyle(.plain)
+                .disabled(filteredLogs.isEmpty)
+                .help("将当前筛选出的脱敏诊断日志复制到剪贴板")
 
-            Button {
-                send(.clearLogs)
-            } label: {
-                Text("清空 ⌫")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(palette.stopCrimson)
-                    .padding(.horizontal, 12)
-                    .frame(height: 32)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(palette.cardBackground)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(palette.border, lineWidth: 1)
-                    }
+                Button {
+                    send(.exportLogs)
+                } label: {
+                    Text("导出 ↻")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(palette.cardBackground)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(palette.border, lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .help("导出脱敏诊断日志到文件")
+
+                Button {
+                    send(.clearLogs)
+                } label: {
+                    Text("清空 ⌫")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(palette.stopCrimson)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(palette.cardBackground)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(palette.border, lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .disabled(snapshot.logs.isEmpty)
             }
-            .buttonStyle(.plain)
-            .disabled(snapshot.logs.isEmpty)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 52)
+        .padding(12)
         .zenCard(isActive: false, cornerRadius: 14)
     }
 
@@ -501,9 +665,9 @@ struct LogsWorkspaceView: View {
                 Text("时间戳")
                     .frame(width: 96, alignment: .leading)
                 Text("模块")
-                    .frame(width: 100, alignment: .leading)
+                    .frame(width: 116, alignment: .leading)
                 Text("阶段")
-                    .frame(width: 136, alignment: .leading)
+                    .frame(width: 124, alignment: .leading)
                 Text("日志消息与遥测内容")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -567,6 +731,8 @@ private struct ZenConsoleLogRow: View {
                 Text(entry.module)
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(
@@ -575,15 +741,15 @@ private struct ZenConsoleLogRow: View {
                     )
                 Spacer(minLength: 0)
             }
-            .frame(width: 100, alignment: .leading)
+            .frame(width: 116, alignment: .leading)
 
             Text(entry.stage)
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(palette.textPrimary)
-                .frame(width: 136, alignment: .leading)
+                .frame(width: 124, alignment: .leading)
                 .lineLimit(1)
 
-            Text(entry.message)
+            Text(LogRedactor.redact(entry.message))
                 .font(.system(size: 12))
                 .foregroundStyle(palette.textPrimary)
                 .textSelection(.enabled)

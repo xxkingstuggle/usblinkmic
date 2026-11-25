@@ -87,6 +87,7 @@ public struct SettingsSheetSessionState: Equatable, Sendable {
 }
 
 public struct RootView: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     private let snapshot: AppSnapshot
     private let telemetry: AudioTelemetry?
     private let send: (UserAction) -> Void
@@ -129,12 +130,31 @@ public struct RootView: View {
                         } label: {
                             Label("刷新设备", systemImage: "arrow.clockwise")
                         }
+                        .keyboardShortcut("r", modifiers: .command)
                         .help("刷新设备与连接状态 (⌘R)")
                     }
                 }
         }
-        .containerBackground(.thinMaterial, for: .window)
+        .containerBackground(
+            reduceTransparency
+                ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
+                : AnyShapeStyle(.thinMaterial),
+            for: .window
+        )
         .frame(minWidth: 720, minHeight: 520)
+        .background {
+            VStack {
+                ForEach(SidebarSection.allCases) { section in
+                    Button(section.title) {
+                        selectedSection = section
+                    }
+                    .keyboardShortcut(section.shortcutKey, modifiers: .command)
+                }
+            }
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
+        }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .wizard:
@@ -182,10 +202,12 @@ public struct RootView: View {
     private func sidebarItem(_ section: SidebarSection) -> some View {
         Label(section.title, systemImage: section.symbol)
             .tag(section)
+            .help("\(section.title) (\(section.shortcutHint))")
     }
 
     private var deviceMenu: some View {
-        Menu {
+        let effectiveSelectedID = DevicesWorkspaceView.effectiveSelectedDeviceID(for: snapshot)
+        return Menu {
             if snapshot.devices.isEmpty {
                 Text("未检测到 USB 手机")
             } else {
@@ -193,7 +215,7 @@ public struct RootView: View {
                     Button {
                         send(.selectDevice(device.id))
                     } label: {
-                        if snapshot.selectedDeviceID == device.id {
+                        if effectiveSelectedID == device.id {
                             Label("\(device.name) · \(device.state.label)", systemImage: "checkmark")
                         } else {
                             Text("\(device.name) · \(device.state.label)")

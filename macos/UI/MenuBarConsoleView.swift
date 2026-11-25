@@ -45,6 +45,7 @@ public struct MenuBarConsoleView: View {
     private let telemetry: AudioTelemetry?
     private let send: (UserAction) -> Void
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public init(snapshot: AppSnapshot, telemetry: AudioTelemetry? = nil, send: @escaping (UserAction) -> Void) {
         self.snapshot = snapshot
@@ -108,6 +109,7 @@ public struct MenuBarConsoleView: View {
         }
         .padding(16)
         .frame(width: 336)
+        .background(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : Color.clear)
     }
 
     private var headerSection: some View {
