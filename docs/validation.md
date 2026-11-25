@@ -2,6 +2,17 @@
 
 统一检查入口为 `bash scripts/validate.sh`。构建环境见[开发指南](development.md)，完整场景见[验收矩阵](acceptance.md)。
 
+## 本机宿主侧代码加固与动态验证（2026-11-26）
+
+- **范围与边界**：本轮仅针对 `macos/` 执行并发连接安全加固、日志脱敏升级、桌面端多设备/日志工作区与无障碍精修及宿主侧动态验证；因本机无现成 JDK，严格遵守未实编译不改动原则，未修改任何 `.kt` 源码，亦未替换 `/Applications/USB LinkMic.app` 生产安装包，未修改冻结的 `docs/requirements.md`（SHA-256 校验通过）与 `docs/acceptance.md`（`T01`–`T24`）。
+- **核心修复**：
+  - `WifiControlListener` 以分代 `[UUID: WifiControlConnection]` 连接池取代裸计数，`stop()` 立即取消本代全部已接受连接并隔离跨代释放回调；`WifiControlConnection` 将 `serviceID` 与 `closedNotified` 收敛至自身串行队列并在 `@MainActor` 注册前后二次核验，根治早夭连接幽灵会话泄漏。
+  - `SessionController` 修复 Wi-Fi 监听启动失败空转 `wifiTicker` 及非自动连接宿主模式下跳过启动边界 `listenAddress` 校验的问题；`LogRedactor` 静态缓存正则并补齐 JSON 凭据脱敏。
+  - `DevicesWorkspaceView` 修复多设备默认全选与循环内重复渲染「重新扫描」按钮；`LogsWorkspaceView` 升级 5 类模块筛选胶囊（全部 / 音频 / 网络 / Wi-Fi / 系统）、关键字检索与一键「复制脱敏」；补齐 `⌘1`–`⌘4` / `⌘R` 快捷键及 `Reduce Transparency` / `Reduce Motion` 降级。
+- **门禁与单测**：`shasum -a 256 -c docs/requirements.sha256` 通过；`python3 scripts/secret-scan.py`（114 个文本文件）通过；`nice -n 15 swift test` 全量 **114/114 通过**（`CoreTests` 62/62、`SupportTests` 45/45、`UITests` 7/7，0 失败 0 跳过 0 编译警告）。
+- **macOS 宿主进程与窗口动态验收**：直接启动 `.build/debug/USBLinkMic` 核验进程稳定运行（CPU `0.3%`、RSS `148.4 MB`）、`CGWindowListCopyWindowInfo` 核验主窗口 `"USB LinkMic"`（`layer=0, 1000×690`）正常创建上屏、Wi-Fi 控制监听成功绑定本机 TCP 端口（`54044` / `54045`）；经 `NSRunningApplication.terminate()` 触发 `TerminationCoordinator` 在约 `44ms` 内完成优雅退出（退出码 `0`，日志记录 `shutdown completed`），并验证 `SIGTERM` 退出路径；退出后确认 `0` 残留窗口、`0` 残留 `USBLinkMic`/`adb`/`relay` 进程、Wi-Fi 监听端口已释放。
+- **未实测项**：本轮未连接实体 Android 手机，未重跑真实 USB/Wi-Fi 音频流、手机给 Mac 供网、Mac 反向供网、USB 充电切换及 `T01`–`T24` 实体机验收矩阵；未打包或替换 `/Applications/USB LinkMic.app`。
+
 ## 本机状态（2026-11-14）
 
 - Mac 已安装并运行 USB LinkMic 4.0.17（构建 40174），深层签名校验通过。内置 ADB 为 37.0.1，本机 ADB 服务使用原生 USB 后端。配套 APK 为 4.0.17，连接中的手机回报 4.0.17（40017），协议 v4、运行时修订 416。
