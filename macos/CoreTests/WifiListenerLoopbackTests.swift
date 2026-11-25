@@ -19,14 +19,28 @@ private final class LineClient: @unchecked Sendable {
   connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
  }
  func open() async throws {
+  final class ResumeGuard: @unchecked Sendable {
+   private let lock = NSLock()
+   private var resumed = false
+   func claim() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !resumed else { return false }
+    resumed = true
+    return true
+   }
+  }
   try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-   var resumed = false
+   let resumeGuard = ResumeGuard()
+   let finish: @Sendable (Result<Void, Error>) -> Void = { result in
+    guard resumeGuard.claim() else { return }
+    continuation.resume(with: result)
+   }
    connection.stateUpdateHandler = { state in
-    guard !resumed else { return }
     switch state {
-    case .ready: resumed = true; continuation.resume()
-    case .failed(let error): resumed = true; continuation.resume(throwing: error)
-    case .waiting(let error): resumed = true; continuation.resume(throwing: error)
+    case .ready: finish(.success(()))
+    case .failed(let error): finish(.failure(error))
+    case .waiting(let error): finish(.failure(error))
     default: break
     }
    }
@@ -243,5 +257,137 @@ private final class LineClient: @unchecked Sendable {
 
   receiver.stop()
   XCTAssertFalse(receiver.isReady, "AudioReceiver must report isReady == false after stop()")
+ }
+
+ func testStopAndRestartCancelsActiveConnectionsAndPreservesNextGenerationQuota() async throws {
+  directory = FileManager.default.temporaryDirectory.appendingPathComponent("wifi-restart-\(UUID().uuidString)")
+  let trust = try WifiTrustStore(url: directory.appendingPathComponent("wifi-trust.json"))
+  let host = IdleHost()
+  hostRetainer = host
+  service = WifiControlService(trust: trust, host: host, macName: "重连配额测试 Mac")
+
+  final class StateCollector: @unchecked Sendable {
+   private let lock = NSLock()
+   private var readyPorts: [UInt16] = []
+   func record(_ state: WifiListenerState) {
+    if case .ready(let port, _) = state, port > 0 {
+     lock.lock()
+     readyPorts.append(port)
+     lock.unlock()
+    }
+   }
+   func port(at index: Int) -> UInt16? {
+    lock.lock()
+    defer { lock.unlock() }
+    return index < readyPorts.count ? readyPorts[index] : nil
+   }
+  }
+
+  let collector = StateCollector()
+  let created = WifiControlListener(
+   service: service,
+   configuration: .init(macID: trust.macID, macName: "重连配额测试 Mac", advertise: false, loopbackOnly: true)
+  ) { state in
+   collector.record(state)
+  }
+  listener = created
+
+  try created.start()
+  var port1: UInt16?
+  for _ in 0..<100 {
+   if let p = collector.port(at: 0) { port1 = p; break }
+   try await Task.sleep(nanoseconds: 20_000_000)
+  }
+  let firstPort = try XCTUnwrap(port1)
+
+  var gen1Clients: [LineClient] = []
+  for index in 0..<WifiControlListener.maximumConnections {
+   let client = LineClient(port: firstPort)
+   try await client.open()
+   client.send([
+    "cmd": "hello", "protocol": 4, "wifi": 1, "runtimeRevision": Capabilities.runtimeRevision,
+    "phoneID": "phone-gen1-\(index)", "phoneName": "Gen1-\(index)", "nonce": WifiCrypto.randomHex(byteCount: 16)
+   ])
+   let reply = await client.readLine()
+   XCTAssertEqual(reply?["ok"] as? Bool, true)
+   gen1Clients.append(client)
+  }
+  XCTAssertEqual(created.activeConnectionCount, WifiControlListener.maximumConnections)
+  XCTAssertEqual(service.openConnectionCount, WifiControlListener.maximumConnections)
+
+  // Stop while all slots are occupied: active connections must be cancelled immediately.
+  created.stop()
+  XCTAssertEqual(created.activeConnectionCount, 0)
+
+  for client in gen1Clients {
+   let eof = await client.readLine()
+   XCTAssertNil(eof, "Stopping listener must terminate already-accepted client sockets")
+  }
+  for _ in 0..<50 where service.openConnectionCount > 0 {
+   try await Task.sleep(nanoseconds: 20_000_000)
+  }
+  XCTAssertEqual(service.openConnectionCount, 0, "Service must not retain any session after listener stop")
+
+  // Start generation 2 and close gen1 client handles concurrently; full quota must be available.
+  try created.start()
+  var port2: UInt16?
+  for _ in 0..<100 {
+   if let p = collector.port(at: 1) { port2 = p; break }
+   try await Task.sleep(nanoseconds: 20_000_000)
+  }
+  let secondPort = try XCTUnwrap(port2)
+  for client in gen1Clients { client.close() }
+
+  var gen2Clients: [LineClient] = []
+  defer { for client in gen2Clients { client.close() } }
+  for index in 0..<WifiControlListener.maximumConnections {
+   let client = LineClient(port: secondPort)
+   try await client.open()
+   client.send([
+    "cmd": "hello", "protocol": 4, "wifi": 1, "runtimeRevision": Capabilities.runtimeRevision,
+    "phoneID": "phone-gen2-\(index)", "phoneName": "Gen2-\(index)", "nonce": WifiCrypto.randomHex(byteCount: 16)
+   ])
+   let reply = await client.readLine()
+   XCTAssertEqual(reply?["ok"] as? Bool, true, "Generation 2 connection #\(index) must not be rejected by stale counts")
+   gen2Clients.append(client)
+  }
+  XCTAssertEqual(created.activeConnectionCount, WifiControlListener.maximumConnections)
+  XCTAssertEqual(service.openConnectionCount, WifiControlListener.maximumConnections)
+
+  for client in gen2Clients { client.close() }
+  gen2Clients.removeAll()
+  for _ in 0..<80 where created.activeConnectionCount > 0 || service.openConnectionCount > 0 {
+   try await Task.sleep(nanoseconds: 20_000_000)
+  }
+  XCTAssertEqual(created.activeConnectionCount, 0)
+  XCTAssertEqual(service.openConnectionCount, 0)
+ }
+
+ func testAbortedEarlyConnectionsDoNotLeakServiceSessions() async throws {
+  let port = try await startListener()
+  let activeListener = try XCTUnwrap(listener)
+
+  for _ in 0..<16 {
+   let shortLived = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+   shortLived.start(queue: .global())
+   try await Task.sleep(nanoseconds: 5_000_000)
+   shortLived.cancel()
+  }
+
+  for _ in 0..<100 where activeListener.activeConnectionCount > 0 || service.openConnectionCount > 0 {
+   try await Task.sleep(nanoseconds: 20_000_000)
+  }
+  XCTAssertEqual(activeListener.activeConnectionCount, 0)
+  XCTAssertEqual(service.openConnectionCount, 0, "Early-aborted TCP connections must never leak ghost WifiControlService sessions")
+
+  let healthy = LineClient(port: port)
+  try await healthy.open()
+  defer { healthy.close() }
+  healthy.send([
+   "cmd": "hello", "protocol": 4, "wifi": 1, "runtimeRevision": Capabilities.runtimeRevision,
+   "phoneID": "phone-after-abort", "phoneName": "恢复测试机", "nonce": WifiCrypto.randomHex(byteCount: 16)
+  ])
+  let reply = await healthy.readLine()
+  XCTAssertEqual(reply?["ok"] as? Bool, true)
  }
 }

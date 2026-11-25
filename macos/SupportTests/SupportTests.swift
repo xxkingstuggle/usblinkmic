@@ -85,6 +85,20 @@ final class SupportTests: XCTestCase {
         XCTAssertTrue(output.contains("[HOME]"))
     }
 
+    func testLogRedactorMasksJsonFormattedSecretsWithoutBreakingPublicFields() {
+        let input = #"{"macID":"mac-public-1234","token":"tok-secret-999","pairingCode":"deadbeef00112233","proof":"cafe1234","nonce":"abcd5678","serial":"R5CT12345"}"#
+        let output = LogRedactor.redact(input)
+
+        XCTAssertTrue(output.contains(#""macID":"mac-public-1234""#))
+        XCTAssertFalse(output.contains("tok-secret-999"))
+        XCTAssertFalse(output.contains("deadbeef00112233"))
+        XCTAssertFalse(output.contains("cafe1234"))
+        XCTAssertFalse(output.contains("abcd5678"))
+        XCTAssertFalse(output.contains("R5CT12345"))
+        XCTAssertTrue(output.contains(#""token":"[REDACTED]""#))
+        XCTAssertTrue(output.contains(#""pairingCode":"[REDACTED]""#))
+    }
+
     func testWifiTargetHostNormalizationRejectsLocalhostTrailingDotAndSubdomains() {
         for invalid in [
             "localhost",

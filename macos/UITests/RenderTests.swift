@@ -196,6 +196,77 @@ final class RenderTests: XCTestCase {
         XCTAssertEqual(sessionB.draft.wifiHost, "192.168.1.99")
     }
 
+    @MainActor
+    func testMultiDeviceEffectiveSelectionAndLogsFilteringRedactionAndReduceMotionWaveform() throws {
+        var multiDevice = activeSnapshot()
+        multiDevice.devices = [
+            Device(id: "DEV-FIRST", name: "Pixel 9 Pro", state: .online),
+            Device(id: "DEV-SECOND", name: "Galaxy S24", state: .online)
+        ]
+        multiDevice.selectedDeviceID = nil
+        XCTAssertEqual(DevicesWorkspaceView.effectiveSelectedDeviceID(for: multiDevice), "DEV-FIRST")
+
+        multiDevice.selectedDeviceID = "DEV-SECOND"
+        XCTAssertEqual(DevicesWorkspaceView.effectiveSelectedDeviceID(for: multiDevice), "DEV-SECOND")
+
+        multiDevice.selectedDeviceID = "DEV-STALE"
+        XCTAssertEqual(DevicesWorkspaceView.effectiveSelectedDeviceID(for: multiDevice), "DEV-FIRST")
+
+        multiDevice.devices = []
+        XCTAssertNil(DevicesWorkspaceView.effectiveSelectedDeviceID(for: multiDevice))
+
+        let logs = [
+            LogEntry(module: "audio", stage: "stream", message: "started 48kHz"),
+            LogEntry(module: "phoneInternet", stage: "ncm", message: "link up 192.168.42.10"),
+            LogEntry(module: "wifi", stage: "auth", message: "token=topsecret123 /Users/zjx/file.txt"),
+            LogEntry(module: "system", stage: "boot", message: "ready")
+        ]
+        XCTAssertEqual(LogsWorkspaceView.filteredEntries(logs, filter: .all, query: "").count, 4)
+        XCTAssertEqual(LogsWorkspaceView.filteredEntries(logs, filter: .audio, query: "").map(\.module), ["audio"])
+        XCTAssertEqual(LogsWorkspaceView.filteredEntries(logs, filter: .network, query: "").map(\.module), ["phoneInternet"])
+        XCTAssertEqual(LogsWorkspaceView.filteredEntries(logs, filter: .wifi, query: "").map(\.module), ["wifi"])
+        XCTAssertEqual(LogsWorkspaceView.filteredEntries(logs, filter: .system, query: "").map(\.module), ["system"])
+        XCTAssertEqual(LogsWorkspaceView.filteredEntries(logs, filter: .all, query: "48kHz").map(\.module), ["audio"])
+
+        let redacted = LogsWorkspaceView.formattedRedactedLogs(logs)
+        XCTAssertFalse(redacted.contains("topsecret123"))
+        XCTAssertFalse(redacted.contains("192.168.42.10"))
+        XCTAssertFalse(redacted.contains("/Users/zjx"))
+        XCTAssertTrue(redacted.contains("token=[REDACTED]"))
+        XCTAssertTrue(redacted.contains("[IP]"))
+        XCTAssertTrue(redacted.contains("[HOME]"))
+
+        let reducedBars = ZenWaveformWell.normalizedBars(from: [0.1, 0.9, 0.2, 0.8], level: 0.4, targetCount: 16, reduceMotion: true)
+        XCTAssertEqual(reducedBars.count, 16)
+        XCTAssertEqual(Set(reducedBars).count, 1, "Reduce Motion waveform bars should remain calm and uniform")
+        XCTAssertEqual(reducedBars[0], 0.5, accuracy: 0.001)
+
+        let root = renderDirectory()
+        var multiRenderSnapshot = activeSnapshot()
+        multiRenderSnapshot.devices = [
+            Device(id: "DEV-FIRST", name: "Pixel 9 Pro", state: .online),
+            Device(id: "DEV-SECOND", name: "Galaxy S24", state: .unauthorized)
+        ]
+        multiRenderSnapshot.selectedDeviceID = nil
+        multiRenderSnapshot.logs = logs
+
+        let devicesView = NSHostingView(
+            rootView: RootView(snapshot: multiRenderSnapshot, initialSection: .devices, send: { _ in })
+        )
+        devicesView.appearance = NSAppearance(named: .darkAqua)
+        devicesView.frame = NSRect(x: 0, y: 0, width: 1000, height: 680)
+        devicesView.layoutSubtreeIfNeeded()
+        try write(devicesView, to: root.appendingPathComponent("workspace-devices-multi-dark.png"))
+
+        let logsView = NSHostingView(
+            rootView: RootView(snapshot: multiRenderSnapshot, initialSection: .logs, send: { _ in })
+        )
+        logsView.appearance = NSAppearance(named: .aqua)
+        logsView.frame = NSRect(x: 0, y: 0, width: 820, height: 640)
+        logsView.layoutSubtreeIfNeeded()
+        try write(logsView, to: root.appendingPathComponent("workspace-logs-wifi-light.png"))
+    }
+
     // MARK: - Helpers
 
     private func renderDirectory() -> URL {

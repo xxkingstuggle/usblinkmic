@@ -341,11 +341,11 @@ private final class TestPhone {
   XCTAssertEqual(host.ended.first?.1, "replaced")
   XCTAssertEqual(service.activeSessionID(), second)
   // the old (still open) connection sends its stop for the replaced session late
-  let beforeCount = host.ended.count
   await service.receive(oldPhone.stop(first), on: i1)
-  XCTAssertEqual(c1.last["code"] as? String, "STALE_SESSION")
+  XCTAssertEqual(c1.last["cmd"] as? String, "stopped")
+  XCTAssertEqual(c1.last["session"] as? String, first)
   XCTAssertEqual(service.activeSessionID(), second, "stopping a replaced session cannot cancel the newer one")
-  XCTAssertEqual(host.ended.count, beforeCount)
+  XCTAssertFalse(host.ended.map(\.0).contains(second), "late stop for replaced session must never end the newer session")
  }
 
  func testStopOfCurrentSessionEndsOnlyThatSession() async throws {
@@ -357,9 +357,26 @@ private final class TestPhone {
   XCTAssertEqual(conn.last["cmd"] as? String, "stopped")
   XCTAssertEqual(host.ended.map(\.0), [session])
   XCTAssertNil(service.activeSessionID())
-  // a second stop is stale, not an error that kills anything
+  // a second stop is idempotent and replies stopped without harming any active state
   await service.receive(phone.stop(session), on: id)
-  XCTAssertEqual(conn.last["code"] as? String, "STALE_SESSION")
+  XCTAssertEqual(conn.last["cmd"] as? String, "stopped")
+  XCTAssertEqual(conn.last["session"] as? String, session)
+  XCTAssertNil(service.activeSessionID())
+ }
+
+ func testStopFromDifferentPhoneIsForbiddenAndPreservesActiveSession() async throws {
+  let owner = try await pairedPhone(name: "持有者手机")
+  let intruder = try await pairedPhone(name: "其他手机")
+  let (ownerConn, ownerID) = await authenticate(owner)
+  let (intruderConn, intruderID) = await authenticate(intruder)
+  await service.receive(owner.prepare(), on: ownerID)
+  let activeSession = try XCTUnwrap(ownerConn.last["session"] as? String)
+
+  await service.receive(intruder.stop(activeSession), on: intruderID)
+  XCTAssertEqual(intruderConn.last["cmd"] as? String, "error")
+  XCTAssertEqual(intruderConn.last["code"] as? String, "FORBIDDEN")
+  XCTAssertEqual(service.activeSessionID(), activeSession)
+  XCTAssertTrue(host.ended.isEmpty)
  }
 
  func testSecondPhoneIsBusyWhileAnotherStreams() async throws {
