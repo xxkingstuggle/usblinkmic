@@ -32,11 +32,11 @@
 Review-4 的生产代码提交为 `4d5df9f`。版本仍为 4.0.17，请以以上 APK 摘要区分修复前后的安装包。
 
 本次替换前的 Mac App、Mac 状态目录和旧 4.0.17 APK 已保存到：
-`/Users/zjx/Developer/backups/USBLinkMic/20261104-040456-before-ui-fix/`。
+`~/Developer/backups/USBLinkMic/20261104-040456-before-ui-fix/`。
 其中 `Android-4.0.17-before-ui-fix.apk` 是 Review-3，SHA-256 为 `598f699dac74ff335b402d145e813265187aa59b63a1494e6311793c6237834c`。它是安装包备份，不包含手机私有设置；本次采用保留数据的覆盖升级，没有卸载或清除数据。
 
 更早的 Mac 4.0.16 和手机 4.0.15 安装包备份保留在：
-`/Users/zjx/Developer/backups/USBLinkMic/20261104-034334-before-4.0.17/`。
+`~/Developer/backups/USBLinkMic/20261104-034334-before-4.0.17/`。
 
 后续测试前若要重新备份，请正常退出 Mac App，将应用和整个 `~/Library/Application Support/USBLinkMic-v4/` 复制到自己选择的、尚不存在的目录，保留原目录。
 

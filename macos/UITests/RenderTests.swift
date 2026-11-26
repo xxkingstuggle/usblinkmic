@@ -232,7 +232,7 @@ final class RenderTests: XCTestCase {
         let logs = [
             LogEntry(module: "audio", stage: "stream", message: "started 48kHz"),
             LogEntry(module: "phoneInternet", stage: "ncm", message: "link up 192.168.42.10"),
-            LogEntry(module: "wifi", stage: "auth", message: "token=topsecret123 /Users/zjx/file.txt"),
+            LogEntry(module: "wifi", stage: "auth", message: "token=topsecret123 /Users/alice/file.txt"),
             LogEntry(module: "system", stage: "boot", message: "ready")
         ]
         XCTAssertEqual(LogsWorkspaceView.filteredEntries(logs, filter: .all, query: "").count, 4)
@@ -245,7 +245,7 @@ final class RenderTests: XCTestCase {
         let redacted = LogsWorkspaceView.formattedRedactedLogs(logs)
         XCTAssertFalse(redacted.contains("topsecret123"))
         XCTAssertFalse(redacted.contains("192.168.42.10"))
-        XCTAssertFalse(redacted.contains("/Users/zjx"))
+        XCTAssertFalse(redacted.contains("/Users/alice"))
         XCTAssertTrue(redacted.contains("token=[REDACTED]"))
         XCTAssertTrue(redacted.contains("[IP]"))
         XCTAssertTrue(redacted.contains("[HOME]"))
