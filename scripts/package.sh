@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-version="${1:-4.0.17}"
+version="${1:-4.0.18}"
 [[ "$version" =~ ^[0-9A-Za-z.-]+$ ]]
 release="${USBLINKMIC_RELEASE_ROOT:-$HOME/Developer/releases/usblinkmic}/$version"
 if [[ -e "$release" ]]; then echo 'Refusing to overwrite an existing release directory' >&2; exit 1; fi

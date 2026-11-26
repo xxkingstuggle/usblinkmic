@@ -30,7 +30,7 @@ public enum Capabilities {
  public static let maxFrameBytes = 262144
  public static let androidControlComponent = "com.zjx.usblinkmic/.AdbControlActivity"
  public static let legacyAndroidControlComponent = "com.zjx.usblinkmic/.MainActivity"
- public static let version = "4.0.17"
+ public static let version = "4.0.18"
  public static let wifiRevision = 1
  public static let bonjourServiceType = "_usblinkmic._tcp"
 }
