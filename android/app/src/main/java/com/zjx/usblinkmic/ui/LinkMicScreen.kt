@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -996,6 +997,51 @@ private fun SettingsPage(
                     Text("查看底层音频与通讯管道事件", fontSize = 11.5.sp, color = palette.textSecondary)
                 }
                 Text("${snapshot.logs.size} 条 ›", fontSize = 12.sp, color = palette.textTertiary)
+            }
+        }
+
+        val uriHandler = LocalUriHandler.current
+        ZenGroup(palette, "关于 USB LinkMic") {
+            ZenInfoRow(
+                palette,
+                "版本",
+                "v${Capabilities.VERSION} · 协议 v${Capabilities.PROTOCOL_VERSION}",
+            )
+            ZenInfoRow(
+                palette,
+                "作者",
+                "Xin (@xxkingstuggle)",
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        runCatching { uriHandler.openUri("https://myzjx.com/software/usblinkmic/") }
+                    }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("官方网站", fontSize = 13.5.sp, color = palette.textPrimary)
+                    Text("myzjx.com/software/usblinkmic/", fontSize = 11.5.sp, color = palette.blue)
+                }
+                Text("访问 ›", fontSize = 12.sp, color = palette.textTertiary)
+            }
+            HorizontalDivider(color = palette.divider)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        runCatching { uriHandler.openUri("https://github.com/xxkingstuggle") }
+                    }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("GitHub 主页", fontSize = 13.5.sp, color = palette.textPrimary)
+                    Text("@xxkingstuggle · myzjx.com", fontSize = 11.5.sp, color = palette.blue)
+                }
+                Text("访问 ›", fontSize = 12.sp, color = palette.textTertiary)
             }
         }
     }

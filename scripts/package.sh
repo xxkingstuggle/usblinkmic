@@ -64,6 +64,7 @@ p={
     'LSMinimumSystemVersion':'26.0',
     'CFBundleIconFile':'AppIcon.icns',
     'NSHighResolutionCapable':True,
+    'NSHumanReadableCopyright':'© 2026 Xin (@xxkingstuggle). All rights reserved.',
     'NSBonjourServices':['_usblinkmic._tcp'],
     'NSLocalNetworkUsageDescription':'通过局域网自动发现并连接你的 Android 手机麦克风，或通过你选择的本地地址接收音频。'
 }

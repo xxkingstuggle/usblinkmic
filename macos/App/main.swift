@@ -22,6 +22,15 @@ import UI
         }
         .defaultSize(width: 1000, height: 690)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("关于 USB LinkMic") {
+                    delegate.showAboutWindow()
+                }
+                Divider()
+                Button("访问官网 myzjx.com") {
+                    NSWorkspace.shared.open(USBLinkMicBrand.productURL)
+                }
+            }
             CommandMenu("连接") {
                 Button("刷新") { controller.send(.refresh, source: .ui) }.keyboardShortcut("r")
                 Button("全部停止") { controller.send(.stopAll, source: .ui) }.keyboardShortcut(".")
@@ -44,6 +53,24 @@ import UI
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var controller: SessionController?
     private let termination = TerminationCoordinator()
+    private var aboutWindow: NSWindow?
+
+    func showAboutWindow() {
+        if let existing = aboutWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+        let hostingController = NSHostingController(rootView: AboutUSBLinkMicWindowView())
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "关于 USB LinkMic"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        aboutWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         termination.requestTermination(controller: controller) { shouldTerminate in

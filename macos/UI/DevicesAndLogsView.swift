@@ -43,6 +43,8 @@ struct DevicesWorkspaceView: View {
                 permissionTableSection
 
                 adbHealthSection
+
+                AboutUSBLinkMicCard()
             }
             .workspaceMargins()
         }

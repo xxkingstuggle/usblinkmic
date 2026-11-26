@@ -150,6 +150,20 @@ final class RenderTests: XCTestCase {
         try write(wizard, to: root.appendingPathComponent("sheet-wizard-dark.png"))
     }
 
+    @MainActor func testAboutCardAndWindowRenderInLightAndDark() throws {
+        _ = NSApplication.shared
+        let root = renderDirectory()
+
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let suffix = appearance == .aqua ? "light" : "dark"
+            let aboutWindowView = NSHostingView(rootView: AboutUSBLinkMicWindowView())
+            aboutWindowView.appearance = NSAppearance(named: appearance)
+            aboutWindowView.frame = NSRect(x: 0, y: 0, width: 520, height: 215)
+            aboutWindowView.layoutSubtreeIfNeeded()
+            try write(aboutWindowView, to: root.appendingPathComponent("about-window-\(suffix).png"))
+        }
+    }
+
     func testSettingsSheetSessionStateIdempotentOpenAndScopedSaveCompletion() {
         let baseline = Contracts.Settings()
         var sessionA = SettingsSheetSessionState(draft: baseline)

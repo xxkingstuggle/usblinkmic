@@ -106,6 +106,7 @@ public struct MenuBarConsoleView: View {
             networkControls
             Divider()
             footerBar
+            brandAttributionBar
         }
         .padding(16)
         .frame(width: 336)
@@ -218,5 +219,21 @@ public struct MenuBarConsoleView: View {
             .buttonStyle(.glass)
         }
         .controlSize(.small)
+    }
+
+    private var brandAttributionBar: some View {
+        HStack(spacing: 5) {
+            Link("myzjx.com", destination: USBLinkMicBrand.productURL)
+            Text("·")
+                .foregroundStyle(.tertiary)
+            Link("@xxkingstuggle", destination: USBLinkMicBrand.githubURL)
+            Spacer(minLength: 0)
+            Text("v\(Capabilities.version)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .padding(.top, 2)
     }
 }

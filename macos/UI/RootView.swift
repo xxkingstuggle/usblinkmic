@@ -191,11 +191,20 @@ public struct RootView: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
-            Text("\(Capabilities.version) · 协议 v\(Capabilities.protocolVersion)")
-                .font(.caption.monospacedDigit())
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(Capabilities.version) · 协议 v\(Capabilities.protocolVersion)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Link("@xxkingstuggle", destination: USBLinkMicBrand.githubURL)
+                    Text("·")
+                    Link("myzjx.com", destination: USBLinkMicBrand.productURL)
+                }
+                .font(.caption2)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
         }
     }
 

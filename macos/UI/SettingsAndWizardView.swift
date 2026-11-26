@@ -1,6 +1,157 @@
 import SwiftUI
+import AppKit
 import Contracts
 import Support
+
+public enum USBLinkMicBrand {
+    public static let authorDisplay = "Xin (@xxkingstuggle)"
+    public static let copyright = "© 2026 Xin (@xxkingstuggle)"
+    public static let websiteURL = URL(string: "https://myzjx.com")!
+    public static let productURL = URL(string: "https://myzjx.com/software/usblinkmic/")!
+    public static let githubURL = URL(string: "https://github.com/xxkingstuggle")!
+    public static let repositoryURL = URL(string: "https://github.com/xxkingstuggle/usblinkmic")!
+}
+
+public struct AboutUSBLinkMicCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    public init() {}
+
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
+                appBadgeView
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text("关于 USB LinkMic")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(palette.textPrimary)
+                        Text("v\(Capabilities.version)")
+                            .font(.caption.monospacedDigit().weight(.medium))
+                            .foregroundStyle(palette.textSecondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(palette.segmentedTrack, in: Capsule())
+                    }
+
+                    Text("由 \(USBLinkMicBrand.authorDisplay) 设计与开发 · 协议 v\(Capabilities.protocolVersion)")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(palette.textSecondary)
+
+                    Text("\(USBLinkMicBrand.copyright) · 保留所有权利")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(palette.textTertiary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                brandLinkPill(
+                    title: "官方网站 · myzjx.com",
+                    symbol: "globe",
+                    destination: USBLinkMicBrand.websiteURL,
+                    emphasized: true
+                )
+                brandLinkPill(
+                    title: "产品主页",
+                    symbol: "safari",
+                    destination: USBLinkMicBrand.productURL
+                )
+                brandLinkPill(
+                    title: "GitHub · @xxkingstuggle",
+                    symbol: "chevron.left.forwardslash.chevron.right",
+                    destination: USBLinkMicBrand.githubURL
+                )
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(18)
+        .zenCard(isActive: false, cornerRadius: 18)
+    }
+
+    @ViewBuilder
+    private var appBadgeView: some View {
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 0.19, green: 0.49, blue: 0.96), Color(red: 0.08, green: 0.31, blue: 0.78)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 48, height: 48)
+        }
+    }
+
+    private func brandLinkPill(
+        title: String,
+        symbol: String,
+        destination: URL,
+        emphasized: Bool = false
+    ) -> some View {
+        Link(destination: destination) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(emphasized ? .white : palette.accentBlue)
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(emphasized ? .white : palette.textPrimary)
+                    .lineLimit(1)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(emphasized ? palette.accentBlue : palette.segmentedTrack)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(emphasized ? Color.clear : palette.border, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+public struct AboutUSBLinkMicWindowView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    public init() {}
+
+    private var palette: ZenPalette { ZenPalette(colorScheme) }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AboutUSBLinkMicCard()
+            Text("Android 手机作为 Mac 麦克风与 USB 双向网络共享工具。")
+                .font(.system(size: 12))
+                .foregroundStyle(palette.textSecondary)
+                .padding(.horizontal, 4)
+        }
+        .padding(20)
+        .frame(width: 520)
+        .background(palette.windowBackground)
+    }
+}
 
 public struct SetupWizard: View {
     @Environment(\.colorScheme) private var colorScheme
